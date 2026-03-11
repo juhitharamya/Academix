@@ -1,0 +1,34 @@
+@import "tailwindcss";
+
+@theme {
+  --color-primary: #2A114B;
+  --color-primary-hover: #3D1A6B;
+  --color-primary-light: #F3E8FF;
+  --color-primary-border: rgba(42, 17, 75, 0.1);
+}
+
+@layer base {
+  body {
+    @apply bg-white text-black;
+  }
+  
+  @media print {
+    body {
+      background: white !important;
+      padding: 0 !important;
+    }
+    header, .print\:hidden {
+      display: none !important;
+    }
+    .print\:shadow-none {
+      box-shadow: none !important;
+    }
+    .print\:border-none {
+      border: none !important;
+    }
+    main {
+      padding: 0 !important;
+      max-width: none !important;
+    }
+  }
+}
