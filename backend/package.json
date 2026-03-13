@@ -1,0 +1,9 @@
+{
+  "name": "academix-backend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node ..\\\\node_modules\\\\tsx\\\\dist\\\\cli.cjs server.ts"
+  }
+}
+
