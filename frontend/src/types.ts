@@ -41,6 +41,19 @@ export interface Subject {
   subject_code: string;
 }
 
+export interface FacultySubjectAssignment {
+  id: string;
+  faculty_id: string;
+  faculty_name: string;
+  department: string;
+  regulation: string;
+  year: string;
+  semester: string;
+  subject_name: string;
+  subject_code: string;
+  created_at: string;
+}
+
 export interface SubjectiveQuestion {
   id?: number;
   set_type?: string;

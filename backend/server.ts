@@ -1,6 +1,6 @@
 import path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
-import { openDb } from "./db.ts";
+import dotenv from "dotenv";
 import { createApp } from "./app.ts";
 
 export async function startServer() {
@@ -9,11 +9,14 @@ export async function startServer() {
   const repoRoot = path.join(__dirname, "..");
   const distDir = path.join(repoRoot, "dist");
 
+  // Load env from repo root even when backend runs with cwd=backend.
+  dotenv.config({ path: path.join(repoRoot, ".env") });
+
   const apiOnly = process.env.API_ONLY === "true";
   const serveStatic = process.env.SERVE_STATIC === "true" || process.env.NODE_ENV === "production";
 
-  const db = openDb();
-  const app = createApp({ db, apiOnly, serveStatic, distDir });
+  const { supabase } = await import("../database/supabaseClient.js");
+  const app = createApp({ supabase, apiOnly, serveStatic, distDir });
 
   const portFromEnv = Number.parseInt(process.env.API_PORT || process.env.PORT || "", 10);
   const PORT = Number.isFinite(portFromEnv) ? portFromEnv : 3002;

@@ -1,182 +1,273 @@
 import express from "express";
-import type { Db } from "../db.ts";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
-export function createPapersRouter(db: Db) {
+function asSetBuckets(questions: any[]) {
+  const subjective: any[] = [];
+  const mcqs: any[] = [];
+  const blanks: any[] = [];
+
+  for (const q of questions || []) {
+    const base = {
+      id: q.id,
+      set_type: q.set_type || null,
+      question_text: q.question_text,
+      marks: q.marks,
+      co_level: q.co_number || null,
+      btl_level: q.btl_level || null,
+    };
+
+    if (q.question_type === "subjective") subjective.push(base);
+    else if (q.question_type === "mcq") {
+      mcqs.push({
+        ...base,
+        option_A: q.options?.option_A ?? q.options?.A ?? "",
+        option_B: q.options?.option_B ?? q.options?.B ?? "",
+        option_C: q.options?.option_C ?? q.options?.C ?? "",
+        option_D: q.options?.option_D ?? q.options?.D ?? "",
+        correct_answer: q.correct_answer ?? "",
+      });
+    } else if (q.question_type === "fill_blank") {
+      blanks.push({ ...base, correct_answer: q.correct_answer ?? "" });
+    }
+  }
+
+  return { subjective, mcqs, blanks };
+}
+
+export function createPapersRouter(supabase: SupabaseClient) {
   const router = express.Router();
 
-  router.get("/api/papers", (req, res) => {
-    const { faculty_id, department, branch, regulation, year, semester, mid_exam_type, status, hod_department } = req.query as any;
-    let query = "SELECT qp.*, f.name as faculty_name FROM question_papers qp JOIN faculty f ON qp.faculty_id = f.faculty_id";
-    const params: any[] = [];
-
-    const conditions: string[] = [];
-    if (faculty_id) {
-      conditions.push("qp.faculty_id = ?");
-      params.push(faculty_id);
-    }
-    if (hod_department) {
-      const hd = String(hod_department);
-      if (hd === "H&S") {
-        conditions.push("(qp.department = 'H&S' AND qp.year = 'I')");
-      } else {
-        conditions.push("((qp.department = ?) OR (qp.department = 'H&S' AND qp.branch = ? AND qp.year <> 'I'))");
-        params.push(hd, hd);
-      }
-    } else if (department) {
-      conditions.push("qp.department = ?");
-      params.push(department);
-    }
-    if (branch) {
-      conditions.push("qp.branch = ?");
-      params.push(branch);
-    }
-    if (regulation) {
-      conditions.push("qp.regulation = ?");
-      params.push(regulation);
-    }
-    if (year) {
-      conditions.push("qp.year = ?");
-      params.push(year);
-    }
-    if (semester) {
-      conditions.push("qp.semester = ?");
-      params.push(semester);
-    }
-    if (mid_exam_type) {
-      conditions.push("qp.mid_exam_type = ?");
-      params.push(mid_exam_type);
-    }
-    if (status) {
-      conditions.push("qp.status = ?");
-      params.push(status);
-    }
-
-    if (conditions.length > 0) {
-      query += " WHERE " + conditions.join(" AND ");
-    }
-
-    query += " ORDER BY qp.created_at DESC";
+  router.get("/api/papers", async (req, res) => {
     try {
-      const papers = db.prepare(query).all(...params);
-      res.json(papers);
+      const { faculty_id, department, branch, regulation, year, semester, mid_exam_type, status, hod_department, subject_code, subject_name } = req.query as any;
+      let q = supabase.from("question_papers").select("*");
+
+      if (faculty_id) q = q.eq("faculty_id", faculty_id);
+
+      if (hod_department) {
+        const hd = String(hod_department);
+        if (hd === "H&S") {
+          q = q.eq("department", "H&S").eq("year", "I");
+        } else {
+          q = q.or(`department.eq.${hd},and(department.eq.H&S,branch.eq.${hd},year.neq.I)`);
+        }
+      } else if (department) {
+        q = q.eq("department", department);
+      }
+
+      if (branch) q = q.eq("branch", branch);
+      if (regulation) q = q.eq("regulation", regulation);
+      if (year) q = q.eq("year", year);
+      if (semester) q = q.eq("semester", semester);
+      if (mid_exam_type) q = q.eq("mid_type", mid_exam_type);
+      if (status) q = q.eq("status", status);
+      if (subject_code) q = q.eq("subject_code", String(subject_code).trim());
+      if (subject_name) q = q.eq("subject_name", String(subject_name).trim());
+
+      q = q.order("created_at", { ascending: false });
+
+      const { data: papers, error } = await q;
+      if (error) return res.status(400).json({ error: error.message });
+
+      const facultyIds = Array.from(new Set((papers || []).map((p: any) => p.faculty_id).filter(Boolean)));
+      const facultyMap = new Map<string, string>();
+      if (facultyIds.length) {
+        const { data: users } = await supabase.from("users").select("faculty_id,name").in("faculty_id", facultyIds);
+        for (const u of users || []) facultyMap.set(u.faculty_id, u.name);
+      }
+
+      res.json(
+        (papers || []).map((p: any) => ({
+          ...p,
+          id: p.id,
+          faculty_name: facultyMap.get(p.faculty_id) || "",
+          mid_exam_type: p.mid_type,
+        })),
+      );
     } catch (error: any) {
-      res.status(400).json({ error: error.message });
+      res.status(500).json({ error: error?.message || "Internal Server Error" });
     }
   });
 
-  router.get("/api/papers/:id", (req, res) => {
-    const paper = db
-      .prepare("SELECT qp.*, f.name as faculty_name FROM question_papers qp JOIN faculty f ON qp.faculty_id = f.faculty_id WHERE qp.id = ?")
-      .get(req.params.id) as any;
+  router.get("/api/papers/:id", async (req, res) => {
+    const id = String(req.params.id || "").trim();
+
+    const { data: paper, error } = await supabase.from("question_papers").select("*").eq("id", id).maybeSingle();
+    if (error) return res.status(400).json({ error: error.message });
     if (!paper) return res.status(404).json({ error: "Paper not found" });
 
-    const subjective = db.prepare("SELECT * FROM subjective_questions WHERE paper_id = ?").all(req.params.id);
-    const mcqs = db.prepare("SELECT * FROM objective_mcqs WHERE paper_id = ?").all(req.params.id);
-    const blanks = db.prepare("SELECT * FROM fill_blanks WHERE paper_id = ?").all(req.params.id);
+    const { data: user } = await supabase.from("users").select("name").eq("faculty_id", paper.faculty_id).maybeSingle();
 
-    res.json({ ...paper, subjective, mcqs, blanks });
-  });
+    const { data: questions, error: qErr } = await supabase.from("questions").select("*").eq("paper_id", id);
+    if (qErr) return res.status(400).json({ error: qErr.message });
 
-  router.post("/api/papers", (req, res) => {
-    const { faculty_id, department, branch, regulation, year, semester, mid_exam_type, subject_name, subject_code, status, set1, set2 } = req.body;
-
-    const transaction = db.transaction(() => {
-      const stmt = db.prepare(`
-        INSERT INTO question_papers (faculty_id, department, branch, regulation, year, semester, mid_exam_type, subject_name, subject_code, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      const result = stmt.run(faculty_id, department, branch, regulation, year, semester, mid_exam_type, subject_name, subject_code, status);
-      const paperId = result.lastInsertRowid;
-
-      const subStmt = db.prepare("INSERT INTO subjective_questions (paper_id, set_type, question_text, marks, co_level, btl_level) VALUES (?, ?, ?, ?, ?, ?)");
-      const mcqStmt = db.prepare(
-        "INSERT INTO objective_mcqs (paper_id, set_type, question_text, option_A, option_B, option_C, option_D, correct_answer, co_level, btl_level) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      );
-      const blankStmt = db.prepare("INSERT INTO fill_blanks (paper_id, set_type, question_text, correct_answer, co_level, btl_level) VALUES (?, ?, ?, ?, ?, ?)");
-
-      const insertSet = (set: any, setType: string) => {
-        for (const q of set.subjective) {
-          subStmt.run(paperId, setType, q.question_text, q.marks, q.co_level, q.btl_level);
-        }
-        for (const q of set.mcqs) {
-          mcqStmt.run(paperId, setType, q.question_text, q.option_A, q.option_B, q.option_C, q.option_D, q.correct_answer, q.co_level || null, q.btl_level || null);
-        }
-        for (const q of set.blanks) {
-          blankStmt.run(paperId, setType, q.question_text, q.correct_answer, q.co_level || null, q.btl_level || null);
-        }
-      };
-
-      if (set1) insertSet(set1, "Set 1");
-      if (set2) insertSet(set2, "Set 2");
-
-      return paperId;
+    const buckets = asSetBuckets(questions || []);
+    res.json({
+      ...paper,
+      id: paper.id,
+      faculty_name: user?.name || "",
+      mid_exam_type: paper.mid_type,
+      ...buckets,
     });
-
-    try {
-      const paperId = transaction();
-      res.json({ success: true, id: paperId });
-    } catch (error: any) {
-      res.status(400).json({ error: error.message });
-    }
   });
 
-  router.patch("/api/papers/:id/status", (req, res) => {
-    const { status, hod_comments } = req.body;
-    try {
-      const stmt = db.prepare("UPDATE question_papers SET status = ?, hod_comments = ? WHERE id = ?");
-      stmt.run(status, hod_comments || null, req.params.id);
-      res.json({ success: true });
-    } catch (error: any) {
-      res.status(400).json({ error: error.message });
+  router.post("/api/papers", async (req, res) => {
+    const { faculty_id, department, branch, regulation, year, semester, mid_exam_type, subject_name, subject_code, status, set1, set2 } = req.body as any;
+
+    const { data: inserted, error } = await supabase
+      .from("question_papers")
+      .insert({
+        faculty_id,
+        department,
+        branch: branch || "",
+        regulation,
+        year,
+        semester,
+        mid_type: mid_exam_type,
+        subject_name,
+        subject_code,
+        status,
+      })
+      .select("id")
+      .single();
+
+    if (error) return res.status(400).json({ error: error.message });
+    const paperId = inserted.id;
+
+    const questions: any[] = [];
+    const pushSet = (set: any, setType: string) => {
+      for (const q of set?.subjective || []) {
+        questions.push({
+          paper_id: paperId,
+          question_type: "subjective",
+          question_text: q.question_text,
+          marks: q.marks,
+          co_number: q.co_level || null,
+          btl_level: q.btl_level || null,
+          set_type: setType,
+        });
+      }
+      for (const q of set?.mcqs || []) {
+        questions.push({
+          paper_id: paperId,
+          question_type: "mcq",
+          question_text: q.question_text,
+          marks: q.marks || 0,
+          co_number: q.co_level || null,
+          btl_level: q.btl_level || null,
+          set_type: setType,
+          options: { option_A: q.option_A, option_B: q.option_B, option_C: q.option_C, option_D: q.option_D },
+          correct_answer: q.correct_answer,
+        });
+      }
+      for (const q of set?.blanks || []) {
+        questions.push({
+          paper_id: paperId,
+          question_type: "fill_blank",
+          question_text: q.question_text,
+          marks: q.marks || 0,
+          co_number: q.co_level || null,
+          btl_level: q.btl_level || null,
+          set_type: setType,
+          correct_answer: q.correct_answer,
+        });
+      }
+    };
+
+    if (set1) pushSet(set1, "Set 1");
+    if (set2) pushSet(set2, "Set 2");
+
+    if (questions.length) {
+      const { error: qErr } = await supabase.from("questions").insert(questions);
+      if (qErr) return res.status(400).json({ error: qErr.message });
     }
+
+    res.json({ success: true, id: paperId });
   });
 
-  router.put("/api/papers/:id", (req, res) => {
-    const { department, branch, regulation, year, semester, mid_exam_type, subject_name, subject_code, status, hod_comments, set1, set2 } = req.body;
-    const paperId = req.params.id;
+  router.patch("/api/papers/:id/status", async (req, res) => {
+    const id = String(req.params.id || "").trim();
+    const { status, hod_comments } = req.body as any;
+    const { error } = await supabase.from("question_papers").update({ status, hod_comments: hod_comments || null }).eq("id", id);
+    if (error) return res.status(400).json({ error: error.message });
+    res.json({ success: true });
+  });
 
-    const transaction = db.transaction(() => {
-      const stmt = db.prepare(`
-        UPDATE question_papers
-        SET department = ?, branch = ?, regulation = ?, year = ?, semester = ?, mid_exam_type = ?, subject_name = ?, subject_code = ?, status = ?, hod_comments = ?
-        WHERE id = ?
-      `);
-      stmt.run(department, branch, regulation, year, semester, mid_exam_type, subject_name, subject_code, status, hod_comments || null, paperId);
+  router.put("/api/papers/:id", async (req, res) => {
+    const paperId = String(req.params.id || "").trim();
+    const { department, branch, regulation, year, semester, mid_exam_type, subject_name, subject_code, status, hod_comments, set1, set2 } = req.body as any;
 
-      db.prepare("DELETE FROM subjective_questions WHERE paper_id = ?").run(paperId);
-      db.prepare("DELETE FROM objective_mcqs WHERE paper_id = ?").run(paperId);
-      db.prepare("DELETE FROM fill_blanks WHERE paper_id = ?").run(paperId);
+    const { error } = await supabase
+      .from("question_papers")
+      .update({
+        department,
+        branch: branch || "",
+        regulation,
+        year,
+        semester,
+        mid_type: mid_exam_type,
+        subject_name,
+        subject_code,
+        status,
+        hod_comments: hod_comments || null,
+      })
+      .eq("id", paperId);
 
-      const subStmt = db.prepare("INSERT INTO subjective_questions (paper_id, set_type, question_text, marks, co_level, btl_level) VALUES (?, ?, ?, ?, ?, ?)");
-      const mcqStmt = db.prepare(
-        "INSERT INTO objective_mcqs (paper_id, set_type, question_text, option_A, option_B, option_C, option_D, correct_answer, co_level, btl_level) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      );
-      const blankStmt = db.prepare("INSERT INTO fill_blanks (paper_id, set_type, question_text, correct_answer, co_level, btl_level) VALUES (?, ?, ?, ?, ?, ?)");
+    if (error) return res.status(400).json({ error: error.message });
 
-      const insertSet = (set: any, setType: string) => {
-        for (const q of set.subjective) {
-          subStmt.run(paperId, setType, q.question_text, q.marks, q.co_level, q.btl_level);
-        }
-        for (const q of set.mcqs) {
-          mcqStmt.run(paperId, setType, q.question_text, q.option_A, q.option_B, q.option_C, q.option_D, q.correct_answer, q.co_level || null, q.btl_level || null);
-        }
-        for (const q of set.blanks) {
-          blankStmt.run(paperId, setType, q.question_text, q.correct_answer, q.co_level || null, q.btl_level || null);
-        }
-      };
+    const { error: delErr } = await supabase.from("questions").delete().eq("paper_id", paperId);
+    if (delErr) return res.status(400).json({ error: delErr.message });
 
-      if (set1) insertSet(set1, "Set 1");
-      if (set2) insertSet(set2, "Set 2");
-    });
+    const questions: any[] = [];
+    const pushSet = (set: any, setType: string) => {
+      for (const q of set?.subjective || []) {
+        questions.push({
+          paper_id: paperId,
+          question_type: "subjective",
+          question_text: q.question_text,
+          marks: q.marks,
+          co_number: q.co_level || null,
+          btl_level: q.btl_level || null,
+          set_type: setType,
+        });
+      }
+      for (const q of set?.mcqs || []) {
+        questions.push({
+          paper_id: paperId,
+          question_type: "mcq",
+          question_text: q.question_text,
+          marks: q.marks || 0,
+          co_number: q.co_level || null,
+          btl_level: q.btl_level || null,
+          set_type: setType,
+          options: { option_A: q.option_A, option_B: q.option_B, option_C: q.option_C, option_D: q.option_D },
+          correct_answer: q.correct_answer,
+        });
+      }
+      for (const q of set?.blanks || []) {
+        questions.push({
+          paper_id: paperId,
+          question_type: "fill_blank",
+          question_text: q.question_text,
+          marks: q.marks || 0,
+          co_number: q.co_level || null,
+          btl_level: q.btl_level || null,
+          set_type: setType,
+          correct_answer: q.correct_answer,
+        });
+      }
+    };
 
-    try {
-      transaction();
-      res.json({ success: true });
-    } catch (error: any) {
-      res.status(400).json({ error: error.message });
+    if (set1) pushSet(set1, "Set 1");
+    if (set2) pushSet(set2, "Set 2");
+
+    if (questions.length) {
+      const { error: insErr } = await supabase.from("questions").insert(questions);
+      if (insErr) return res.status(400).json({ error: insErr.message });
     }
+
+    res.json({ success: true });
   });
 
   return router;
 }
-

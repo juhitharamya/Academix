@@ -234,6 +234,7 @@ export const openApiSpec = {
                 required: ["faculty_id", "department", "regulation", "year", "section", "mid_type", "subject_name", "subject_code", "entries"],
                 properties: {
                   faculty_id: { type: "string" },
+                  actor_id: { type: "string", description: "Optional. When HOD edits, set actor_id=HOD id and faculty_id=original faculty id." },
                   department: { type: "string" },
                   branch: { type: "string", description: "Required when department = H&S" },
                   regulation: { type: "string" },
@@ -279,6 +280,54 @@ export const openApiSpec = {
           { name: "subject_code", in: "query", required: true, schema: { type: "string" } },
         ],
         responses: { "200": { description: "OK" } },
+      },
+    },
+
+    "/api/eval/submit": {
+      post: {
+        tags: ["Evaluation"],
+        summary: "Faculty submit evaluation for HOD review",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["faculty_id", "department", "regulation", "year", "section", "mid_type", "subject_name", "subject_code"],
+                properties: {
+                  faculty_id: { type: "string" },
+                  department: { type: "string" },
+                  branch: { type: "string", description: "Required when department = H&S" },
+                  regulation: { type: "string" },
+                  year: { type: "string" },
+                  section: { type: "string" },
+                  mid_type: { type: "string" },
+                  subject_name: { type: "string" },
+                  subject_code: { type: "string" },
+                },
+              },
+            },
+          },
+        },
+        responses: { "200": { description: "OK" }, "400": { description: "Bad Request" }, "403": { description: "Forbidden" } },
+      },
+    },
+
+    "/api/eval/submissions": {
+      get: {
+        tags: ["Evaluation"],
+        summary: "HOD list submitted evaluations",
+        parameters: [
+          { name: "hod_faculty_id", in: "query", required: true, schema: { type: "string" } },
+          { name: "department", in: "query", required: false, schema: { type: "string" } },
+          { name: "branch", in: "query", required: false, schema: { type: "string" }, description: "Optional filter for H&S" },
+          { name: "regulation", in: "query", required: false, schema: { type: "string" } },
+          { name: "year", in: "query", required: false, schema: { type: "string" } },
+          { name: "section", in: "query", required: false, schema: { type: "string" } },
+          { name: "mid_type", in: "query", required: false, schema: { type: "string" } },
+          { name: "subject_code", in: "query", required: false, schema: { type: "string" } },
+        ],
+        responses: { "200": { description: "OK" }, "403": { description: "Forbidden" } },
       },
     },
   },

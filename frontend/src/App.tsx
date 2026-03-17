@@ -19,10 +19,14 @@ import {
   FileCheck,
   AlertCircle,
   Save,
-  Send
+  Send,
+  Copy,
+  RefreshCw,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import { User, QuestionPaper, Role, SubjectiveQuestion, ObjectiveMCQ, FillBlank, Subject } from './types';
+import { User, QuestionPaper, Role, SubjectiveQuestion, ObjectiveMCQ, FillBlank, Subject, FacultySubjectAssignment } from './types';
 import { buildPaperHtml, downloadHtmlFile, type PaperSetType, type PaperTemplateType } from './paperTemplates';
 
 // --- Components ---
@@ -93,6 +97,56 @@ const getInitials = (name?: string) => {
   const first = parts[0]?.[0] || '';
   const last = (parts.length > 1 ? parts[parts.length - 1]?.[0] : parts[0]?.[1]) || '';
   return (first + last).toUpperCase() || 'U';
+};
+
+const AdminSidebar = ({ current, onSelect }: { current: string; onSelect: (v: any) => void }) => {
+  const items = [
+    { key: 'admin-create-user', label: 'Create User', icon: Plus },
+    { key: 'admin-view-users', label: 'View Users', icon: Users },
+    { key: 'admin-assign-subjects', label: 'Assign Subjects', icon: BookOpen },
+    { key: 'admin-view-assignments', label: 'View Assignments', icon: FileText },
+  ];
+
+  return (
+    <div className="bg-white overflow-hidden">
+      <div className="px-4 py-3 border-b border-primary/10 bg-white">
+        <div className="text-xs tracking-wider uppercase text-primary/60 font-semibold">Academix</div>
+        <div className="text-base font-bold text-black">Administration</div>
+      </div>
+
+      {/* Mobile: compact dropdown */}
+      <div className="p-4 md:hidden">
+        <Select
+          label="Admin Menu"
+          value={current}
+          onChange={(e: any) => onSelect(e.target.value)}
+          options={items.map((it) => ({ label: it.label, value: it.key }))}
+        />
+      </div>
+
+      {/* Desktop: official-style nav list */}
+      <nav className="hidden md:block py-2">
+        {items.map((it) => {
+          const active = current === it.key;
+          return (
+            <button
+              key={it.key}
+              type="button"
+              onClick={() => onSelect(it.key)}
+              className={[
+                'w-full flex items-center gap-3 px-4 py-3 text-sm text-left transition-colors',
+                'border-l-4',
+                active ? 'bg-primary-light/30 border-primary text-black font-semibold' : 'bg-white border-transparent text-black/80 hover:bg-primary-light/20',
+              ].join(' ')}
+            >
+              <it.icon size={18} className={active ? 'text-primary' : 'text-primary/70'} />
+              <span>{it.label}</span>
+            </button>
+          );
+        })}
+      </nav>
+    </div>
+  );
 };
 
 // --- Sub-components ---
@@ -324,7 +378,19 @@ const QuestionSection = ({
   );
 };
 
-function QuestionPaperForm({ user, paper, onCancel, onSuccess }: { user: User, paper?: QuestionPaper, onCancel: () => void, onSuccess: () => void }) {
+function QuestionPaperForm({
+  user,
+  paper,
+  assignedSubjects,
+  onCancel,
+  onSuccess,
+}: {
+  user: User;
+  paper?: QuestionPaper;
+  assignedSubjects: FacultySubjectAssignment[];
+  onCancel: () => void;
+  onSuccess: () => void;
+}) {
   const [step, setStep] = useState(1); // 1: Filters, 2: Set 1, 3: Set 2
   const [loading, setLoading] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -351,6 +417,41 @@ function QuestionPaperForm({ user, paper, onCancel, onSuccess }: { user: User, p
   }, [formData.department, formData.year]);
 
   useEffect(() => {
+    const useAssigned = user.role === 'FACULTY' && Array.isArray(assignedSubjects) && assignedSubjects.length > 0;
+
+    if (useAssigned) {
+      const reg = String(formData.regulation || '').trim().toUpperCase();
+      const dept = String(formData.department || '').trim();
+      const sem = String(formData.semester || '').trim();
+      const yr = String(formData.year || '').trim().toUpperCase();
+
+      if (!reg || !dept || !sem || (dept === 'H&S' ? !formData.branch : !yr)) {
+        setSubjects([]);
+        return;
+      }
+
+      const filtered = assignedSubjects.filter((a) => {
+        if (String(a.regulation || '').toUpperCase() !== reg) return false;
+        if (String(a.department || '') !== dept) return false;
+        if (String(a.semester || '') !== sem) return false;
+        if (String(a.year || '').toUpperCase() !== yr) return false;
+        return true;
+      });
+
+      const mapped: Subject[] = filtered.map((a, idx) => ({
+        id: idx + 1,
+        regulation: a.regulation,
+        department: a.department,
+        year: a.year,
+        semester: a.semester,
+        subject_name: a.subject_name,
+        subject_code: a.subject_code,
+      }));
+      mapped.sort((x, y) => x.subject_name.localeCompare(y.subject_name, undefined, { sensitivity: 'base' }));
+      setSubjects(mapped);
+      return;
+    }
+
     const fetchSubjects = async () => {
       try {
         const params = new URLSearchParams({
@@ -366,7 +467,7 @@ function QuestionPaperForm({ user, paper, onCancel, onSuccess }: { user: User, p
 
         const res = await fetch(`/api/subjects?${params.toString()}`);
         const data = await res.json();
-        setSubjects(data);
+        setSubjects(Array.isArray(data) ? data : []);
       } catch (err) {
         console.error("Failed to fetch subjects", err);
       }
@@ -381,7 +482,7 @@ function QuestionPaperForm({ user, paper, onCancel, onSuccess }: { user: User, p
     } else {
       setSubjects([]);
     }
-  }, [formData.regulation, formData.department, formData.branch, formData.year, formData.semester]);
+  }, [user.role, assignedSubjects, formData.regulation, formData.department, formData.branch, formData.year, formData.semester]);
 
   const handleSubjectChange = (subjectName: string) => {
     const selectedSubject = subjects.find(s => s.subject_name === subjectName);
@@ -574,11 +675,11 @@ function QuestionPaperForm({ user, paper, onCancel, onSuccess }: { user: User, p
                 });
               }}
               options={[
-                { label: 'CSE', value: 'CSE' },
-                { label: 'CSD', value: 'CSD' },
-                { label: 'CSM', value: 'CSM' },
-                { label: 'ECE', value: 'ECE' },
                 { label: 'H&S', value: 'H&S' },
+                { label: 'CSM', value: 'CSM' },
+                { label: 'CSD', value: 'CSD' },
+                { label: 'ECE', value: 'ECE' },
+                { label: 'CSE', value: 'CSE' },
               ]}
             />
             {formData.department === 'H&S' && (
@@ -588,10 +689,10 @@ function QuestionPaperForm({ user, paper, onCancel, onSuccess }: { user: User, p
                 onChange={(e: any) => setFormData({ ...formData, branch: e.target.value, subject_name: '', subject_code: '' })}
                 options={[
                   { label: 'Select Branch', value: '' },
-                  { label: 'CSE', value: 'CSE' },
-                  { label: 'CSD', value: 'CSD' },
                   { label: 'CSM', value: 'CSM' },
+                  { label: 'CSD', value: 'CSD' },
                   { label: 'ECE', value: 'ECE' },
+                  { label: 'CSE', value: 'CSE' },
                 ]}
               />
             )}
@@ -641,9 +742,23 @@ function QuestionPaperForm({ user, paper, onCancel, onSuccess }: { user: User, p
             <Select
               label="Subject"
               value={formData.subject_name}
+              disabled={
+                !formData.regulation ||
+                !formData.department ||
+                !formData.semester ||
+                (formData.department === 'H&S' ? !formData.branch : !formData.year)
+              }
               onChange={(e: any) => handleSubjectChange(e.target.value)}
               options={[
-                { label: 'Select Subject', value: '' },
+                {
+                  label:
+                    !formData.regulation || !formData.department || !formData.semester || (formData.department === 'H&S' ? !formData.branch : !formData.year)
+                      ? 'Select filters first'
+                      : subjects.length
+                        ? 'Select Subject'
+                        : 'No subjects available',
+                  value: '',
+                },
                 ...subjects.map(s => ({ label: s.subject_name, value: s.subject_name }))
               ]}
             />
@@ -819,7 +934,26 @@ function QuestionPaperForm({ user, paper, onCancel, onSuccess }: { user: User, p
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
-  const [view, setView] = useState<'login' | 'signup' | 'dashboard' | 'create-paper' | 'edit-paper' | 'view-paper' | 'evaluation' | 'profile-view' | 'profile-edit' | 'admin-users' | 'admin-user-edit' | 'admin-reset-password'>('login');
+  const [authToken, setAuthToken] = useState<string>('');
+  const [isAdminRoute, setIsAdminRoute] = useState<boolean>(() => window.location.pathname.startsWith('/admin'));
+  const [view, setView] = useState<
+    | 'login'
+    | 'admin-auth'
+    | 'dashboard'
+    | 'create-paper'
+    | 'edit-paper'
+    | 'view-paper'
+    | 'evaluation'
+    | 'profile-view'
+    | 'profile-edit'
+    | 'admin-create-user'
+    | 'admin-view-users'
+    | 'admin-assign-subjects'
+    | 'admin-view-assignments'
+    | 'admin-data'
+    | 'admin-user-edit'
+    | 'admin-reset-password'
+  >(() => (window.location.pathname.startsWith('/admin') ? 'admin-auth' : 'login'));
   const [papers, setPapers] = useState<QuestionPaper[]>([]);
   const [selectedPaper, setSelectedPaper] = useState<QuestionPaper | null>(null);
   const [templateSet, setTemplateSet] = useState<PaperSetType>('Set 1');
@@ -845,6 +979,13 @@ export default function App() {
     department: 'CSE',
     role: 'FACULTY' as Role
   });
+  const [authMode, setAuthMode] = useState<'signup' | 'signin'>('signin');
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
+
+  const [adminAuthMode, setAdminAuthMode] = useState<'signup' | 'signin'>('signin');
+  const [adminAuthForm, setAdminAuthForm] = useState({ name: '', email: '', password: '' });
+  const [adminAuthError, setAdminAuthError] = useState<string | null>(null);
+  const [adminExists, setAdminExists] = useState<boolean | null>(null);
 
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
@@ -858,7 +999,9 @@ export default function App() {
   const [adminUsers, setAdminUsers] = useState<User[]>([]);
   const [adminUsersLoading, setAdminUsersLoading] = useState(false);
   const [adminUsersError, setAdminUsersError] = useState<string | null>(null);
+  const [adminUserFilters, setAdminUserFilters] = useState({ q: '', department: '', role: '' as '' | Role });
   const [adminSelectedUser, setAdminSelectedUser] = useState<User | null>(null);
+  const [adminNotice, setAdminNotice] = useState<string | null>(null);
   const [adminEditForm, setAdminEditForm] = useState({
     faculty_id: '',
     name: '',
@@ -870,7 +1013,51 @@ export default function App() {
     new_password: '',
     confirm_password: '',
   });
+  const [adminShowCreatePassword, setAdminShowCreatePassword] = useState(false);
+  const [adminShowResetPassword, setAdminShowResetPassword] = useState(false);
   const [adminActionError, setAdminActionError] = useState<string | null>(null);
+  const [adminCreateForm, setAdminCreateForm] = useState({
+    faculty_id: '',
+    name: '',
+    email: '',
+    password: '',
+    department: 'CSE',
+    role: 'FACULTY' as Role,
+  });
+  const [adminCreateError, setAdminCreateError] = useState<string | null>(null);
+  const [adminCreating, setAdminCreating] = useState(false);
+  const [adminLastCreated, setAdminLastCreated] = useState<null | {
+    faculty_id: string;
+    name: string;
+    email?: string;
+    role: Role;
+    department: string;
+    password: string;
+  }>(null);
+
+  const [adminDataTable, setAdminDataTable] = useState<'users' | 'students' | 'question_papers' | 'evaluations' | 'student_marks'>('users');
+  const [adminDataRows, setAdminDataRows] = useState<any[]>([]);
+  const [adminDataLoading, setAdminDataLoading] = useState(false);
+  const [adminDataError, setAdminDataError] = useState<string | null>(null);
+
+  const [assignedSubjects, setAssignedSubjects] = useState<FacultySubjectAssignment[]>([]);
+
+  const [adminAssignments, setAdminAssignments] = useState<FacultySubjectAssignment[]>([]);
+  const [adminAssignmentsLoading, setAdminAssignmentsLoading] = useState(false);
+  const [adminAssignmentsError, setAdminAssignmentsError] = useState<string | null>(null);
+  const [adminAssignmentsQ, setAdminAssignmentsQ] = useState<string>('');
+  const [adminAssignNotice, setAdminAssignNotice] = useState<string | null>(null);
+  const [adminAssignError, setAdminAssignError] = useState<string | null>(null);
+  const [adminAssignForm, setAdminAssignForm] = useState({
+    faculty_id: '',
+    regulation: 'R22',
+    year: 'II',
+    semester: 'I',
+    subject_name: '',
+    subject_code: '',
+  });
+  const [adminAssignSubjects, setAdminAssignSubjects] = useState<Subject[]>([]);
+  const [adminAssignSubjectsLoading, setAdminAssignSubjectsLoading] = useState(false);
 
   // Evaluation Scripts
   type EvalStudent = { roll_number: string; student_name: string };
@@ -886,6 +1073,16 @@ export default function App() {
     students: EvalStudent[];
   };
 
+  const compareRollNumbers = (a: string, b: string) => {
+    const na = Number(a);
+    const nb = Number(b);
+    if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb;
+    return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+  };
+
+  const sortStudentsByRollNumber = (students: EvalStudent[]) =>
+    [...students].sort((x, y) => compareRollNumbers(x.roll_number, y.roll_number) || x.student_name.localeCompare(y.student_name));
+
   const [evalUploadFilters, setEvalUploadFilters] = useState({ regulation: 'R22', year: 'II', section: 'A', branch: 'CSE' });
   const [evalUploadFile, setEvalUploadFile] = useState<File | null>(null);
   const [evalUploadError, setEvalUploadError] = useState<string | null>(null);
@@ -894,6 +1091,7 @@ export default function App() {
   const [evalFilters, setEvalFilters] = useState({
     regulation: 'R22',
     year: 'II',
+    semester: 'I',
     section: 'A',
     branch: 'CSE',
     mid_type: 'Mid I',
@@ -904,8 +1102,178 @@ export default function App() {
   const [evalLoading, setEvalLoading] = useState(false);
   const [evalError, setEvalError] = useState<string | null>(null);
   const [evalStep, setEvalStep] = useState<'descriptive' | 'objective'>('descriptive');
-  const [evalCoLabels, setEvalCoLabels] = useState<string[]>(['CO1', 'CO2', 'CO3', 'CO4', 'CO5', 'CO6']);
+  const evalDescCoFallback = ['CO1', 'CO2', 'CO2', 'CO3', 'CO4', 'CO5'];
+  const evalObjCoFallback = ['CO1', 'CO1', 'CO2', 'CO2', 'CO3', 'CO3', 'CO4', 'CO4', 'CO5', 'CO5'];
+
+  const [evalCoLabels, setEvalCoLabels] = useState<string[]>(evalDescCoFallback);
+  const [evalObjCoLabelsMcq, setEvalObjCoLabelsMcq] = useState<string[]>(evalObjCoFallback);
+  const [evalObjCoLabelsFb, setEvalObjCoLabelsFb] = useState<string[]>(evalObjCoFallback);
   const [evalMarks, setEvalMarks] = useState<Record<string, { descriptive: (number | null)[]; mcq: (number | null)[]; fb: (number | null)[] }>>({});
+  const [evalSubmitted, setEvalSubmitted] = useState(false);
+  const [evalActiveFacultyId, setEvalActiveFacultyId] = useState<string>('');
+  const [evalSubmissions, setEvalSubmissions] = useState<any[]>([]);
+
+  const sumMarks = (values: Array<number | null | undefined>) =>
+    (values || []).reduce((sum, v) => sum + (Number.isFinite(Number(v)) ? Number(v) : 0), 0);
+
+  const evalStudentsSorted = useMemo(() => (evalList ? sortStudentsByRollNumber(evalList.students || []) : []), [evalList]);
+  const [evalSubjects, setEvalSubjects] = useState<Subject[]>([]);
+  const [evalSubjectsLoading, setEvalSubjectsLoading] = useState(false);
+  const [evalSubjectsError, setEvalSubjectsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchEvalSubjects = async () => {
+      if (!user) return;
+      setEvalSubjectsLoading(true);
+      setEvalSubjectsError(null);
+
+      try {
+        if (user.role === 'FACULTY' && assignedSubjects.length) {
+          const reg = String(evalFilters.regulation || '').trim().toUpperCase();
+          const sem = String(evalFilters.semester || '').trim();
+          const yr = String(evalFilters.year || '').trim().toUpperCase();
+          const dept = user.department;
+
+          if (!reg || !sem || !yr) {
+            setEvalSubjects([]);
+            return;
+          }
+
+          const filtered = assignedSubjects.filter((a) => {
+            if (String(a.regulation || '').toUpperCase() !== reg) return false;
+            if (String(a.semester || '') !== sem) return false;
+            if (String(a.year || '').toUpperCase() !== yr) return false;
+            if (String(a.department || '') !== dept) return false;
+            return true;
+          });
+
+          const mapped: Subject[] = filtered.map((a, idx) => ({
+            id: idx + 1,
+            regulation: a.regulation,
+            department: a.department,
+            year: a.year,
+            semester: a.semester,
+            subject_name: a.subject_name,
+            subject_code: a.subject_code,
+          }));
+          mapped.sort((x, y) => x.subject_name.localeCompare(y.subject_name, undefined, { sensitivity: 'base' }));
+          setEvalSubjects(mapped);
+          return;
+        }
+
+        const params = new URLSearchParams({
+          regulation: evalFilters.regulation,
+          semester: evalFilters.semester,
+          department: user.department,
+        });
+
+        if (user.department === 'H&S') {
+          if (!evalFilters.branch) {
+            setEvalSubjects([]);
+            return;
+          }
+          params.append('branch', evalFilters.branch);
+        } else {
+          if (!evalFilters.year) {
+            setEvalSubjects([]);
+            return;
+          }
+          params.append('year', evalFilters.year);
+        }
+
+        const res = await fetch(`/api/subjects?${params.toString()}`);
+        const data = await res.json().catch(() => []);
+        if (!res.ok) throw new Error(data?.error || 'Failed to load subjects');
+        setEvalSubjects(Array.isArray(data) ? data : []);
+      } catch (e: any) {
+        setEvalSubjectsError(e?.message || 'Failed to load subjects');
+        setEvalSubjects([]);
+      } finally {
+        setEvalSubjectsLoading(false);
+      }
+    };
+
+    if (!evalFilters.regulation || !evalFilters.semester) {
+      setEvalSubjects([]);
+      return;
+    }
+
+    if (user?.department === 'H&S') {
+      if (!evalFilters.branch) setEvalSubjects([]);
+      else fetchEvalSubjects();
+      return;
+    }
+
+    if (!evalFilters.year) setEvalSubjects([]);
+    else fetchEvalSubjects();
+  }, [user, assignedSubjects, evalFilters.regulation, evalFilters.year, evalFilters.semester, evalFilters.branch]);
+
+  // Auto-load CO labels from the approved Question Paper for the selected subject code.
+  useEffect(() => {
+    const loadCoFromPaper = async () => {
+      if (!user) return;
+
+      if (!evalFilters.subject_code || !evalFilters.regulation || !evalFilters.semester) {
+        setEvalCoLabels(evalDescCoFallback);
+        setEvalObjCoLabelsMcq(evalObjCoFallback);
+        setEvalObjCoLabelsFb(evalObjCoFallback);
+        return;
+      }
+
+      if (user.department !== 'H&S' && !evalFilters.year) return;
+      if (user.department === 'H&S' && !evalFilters.branch) return;
+
+      try {
+        const params = new URLSearchParams({
+          department: user.department,
+          regulation: evalFilters.regulation,
+          semester: evalFilters.semester,
+          mid_exam_type: evalFilters.mid_type,
+          status: 'Approved',
+          subject_code: evalFilters.subject_code,
+        });
+
+        if (user.department === 'H&S') {
+          params.append('branch', evalFilters.branch);
+          params.append('year', 'I');
+        } else {
+          params.append('year', evalFilters.year);
+        }
+
+        const listRes = await fetch(`/api/papers?${params.toString()}`);
+        const listData = await listRes.json().catch(() => []);
+        if (!listRes.ok) throw new Error(listData?.error || 'Failed to load papers');
+
+        const paperMeta = Array.isArray(listData) ? listData[0] : null;
+        if (!paperMeta?.id) {
+          setEvalCoLabels(evalDescCoFallback);
+          setEvalObjCoLabelsMcq(evalObjCoFallback);
+          setEvalObjCoLabelsFb(evalObjCoFallback);
+          return;
+        }
+
+        const paperRes = await fetch(`/api/papers/${paperMeta.id}`);
+        const paper = await paperRes.json().catch(() => ({}));
+        if (!paperRes.ok) throw new Error(paper?.error || 'Failed to load paper details');
+
+        const setType = 'Set 1';
+
+        const desc = (paper?.subjective || []).filter((q: any) => (q?.set_type || '') === setType && String(q?.question_text || '').trim()).slice(0, 6);
+        const mcq = (paper?.mcqs || []).filter((q: any) => (q?.set_type || '') === setType && String(q?.question_text || '').trim()).slice(0, 10);
+        const fb = (paper?.blanks || []).filter((q: any) => (q?.set_type || '') === setType && String(q?.question_text || '').trim()).slice(0, 10);
+
+        setEvalCoLabels(Array.from({ length: 6 }, (_, i) => desc[i]?.co_level || evalDescCoFallback[i] || `CO${i + 1}`));
+        setEvalObjCoLabelsMcq(Array.from({ length: 10 }, (_, i) => mcq[i]?.co_level || evalObjCoFallback[i] || `CO${Math.min(i + 1, 5)}`));
+        setEvalObjCoLabelsFb(Array.from({ length: 10 }, (_, i) => fb[i]?.co_level || evalObjCoFallback[i] || `CO${Math.min(i + 1, 5)}`));
+      } catch {
+        setEvalCoLabels(evalDescCoFallback);
+        setEvalObjCoLabelsMcq(evalObjCoFallback);
+        setEvalObjCoLabelsFb(evalObjCoFallback);
+      }
+    };
+
+    loadCoFromPaper();
+  }, [user, evalFilters.subject_code, evalFilters.regulation, evalFilters.year, evalFilters.semester, evalFilters.branch, evalFilters.mid_type]);
 
   // Fetch Papers
   const fetchPapers = async () => {
@@ -957,14 +1325,138 @@ export default function App() {
     setAdminUsersLoading(true);
     setAdminUsersError(null);
     try {
-      const res = await fetch('/api/admin/users');
-      const data = await res.json();
+      const res = await apiFetch(`/api/admin/users`);
+      const data = await res.json().catch(() => []);
       if (!res.ok) throw new Error(data?.error || 'Failed to load users');
-      setAdminUsers(data);
+      setAdminUsers(Array.isArray(data) ? data : []);
     } catch (err: any) {
       setAdminUsersError(err.message);
     } finally {
       setAdminUsersLoading(false);
+    }
+  };
+
+  const visibleAdminUsers = useMemo(() => {
+    const q = adminUserFilters.q.trim().toLowerCase();
+    const dept = adminUserFilters.department.trim();
+    const role = adminUserFilters.role;
+
+    const filtered = (adminUsers || []).filter((u) => {
+      if (dept && String(u.department || '') !== dept) return false;
+      if (role && String(u.role || '') !== role) return false;
+      if (!q) return true;
+      return String(u.name || '').toLowerCase().includes(q) || String(u.faculty_id || '').toLowerCase().includes(q);
+    });
+
+    filtered.sort((a, b) => {
+      const ad = String(a.department || '').localeCompare(String(b.department || ''), undefined, { sensitivity: 'base' });
+      if (ad !== 0) return ad;
+      const ar = String(a.role || '').localeCompare(String(b.role || ''), undefined, { sensitivity: 'base' });
+      if (ar !== 0) return ar;
+      return String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' });
+    });
+
+    return filtered;
+  }, [adminUsers, adminUserFilters.q, adminUserFilters.department, adminUserFilters.role]);
+
+  const visibleAdminAssignments = useMemo(() => {
+    const q = adminAssignmentsQ.trim().toLowerCase();
+    const filtered = (adminAssignments || []).filter((a) => {
+      if (!q) return true;
+      return (
+        String(a.faculty_name || '').toLowerCase().includes(q) ||
+        String(a.faculty_id || '').toLowerCase().includes(q) ||
+        String(a.subject_name || '').toLowerCase().includes(q) ||
+        String(a.subject_code || '').toLowerCase().includes(q) ||
+        String(a.department || '').toLowerCase().includes(q) ||
+        String(a.regulation || '').toLowerCase().includes(q) ||
+        String(a.year || '').toLowerCase().includes(q) ||
+        String(a.semester || '').toLowerCase().includes(q)
+      );
+    });
+    return filtered;
+  }, [adminAssignments, adminAssignmentsQ]);
+
+  const copyToClipboard = async (text: string) => {
+    try {
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      setAdminNotice('Copied to clipboard.');
+      setTimeout(() => setAdminNotice(null), 2500);
+    } catch {
+      setAdminActionError('Copy failed. Please copy manually.');
+    }
+  };
+
+  const generatePassword = (length = 12) => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@#%*-_!';
+    const bytes = new Uint32Array(length);
+    crypto.getRandomValues(bytes);
+    let out = '';
+    for (let i = 0; i < length; i++) out += chars[bytes[i] % chars.length];
+    return out;
+  };
+
+  const fetchAdminData = async (table: typeof adminDataTable) => {
+    if (!user || user.role !== 'ADMIN') return;
+    setAdminDataLoading(true);
+    setAdminDataError(null);
+    try {
+      const res = await apiFetch(`/api/admin/data/${table}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to load data');
+      setAdminDataRows(data.rows || []);
+    } catch (e: any) {
+      setAdminDataError(e?.message || 'Failed to load');
+      setAdminDataRows([]);
+    } finally {
+      setAdminDataLoading(false);
+    }
+  };
+
+  const handleAdminCreateUser = async () => {
+    if (!user || user.role !== 'ADMIN') return;
+    setAdminCreateError(null);
+    setAdminCreating(true);
+    try {
+      if (!adminCreateForm.faculty_id.trim()) throw new Error('Faculty ID is required');
+      if (!adminCreateForm.name.trim()) throw new Error('Name is required');
+      if (!adminCreateForm.password) throw new Error('Password is required');
+
+      const created = { ...adminCreateForm };
+      const res = await apiFetch('/api/auth/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...adminCreateForm }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) throw new Error(data?.error || 'Failed to create user');
+
+      setAdminLastCreated({
+        faculty_id: created.faculty_id.trim(),
+        name: created.name.trim(),
+        email: created.email?.trim() || '',
+        role: created.role,
+        department: created.department,
+        password: created.password,
+      });
+      setAdminCreateForm({ faculty_id: '', name: '', email: '', password: '', department: 'CSE', role: 'FACULTY' as Role });
+      await fetchAdminUsers();
+    } catch (e: any) {
+      setAdminCreateError(e?.message || 'Create failed');
+    } finally {
+      setAdminCreating(false);
     }
   };
 
@@ -973,8 +1465,116 @@ export default function App() {
   }, [user, dashboardFilters.department, dashboardFilters.branch, dashboardFilters.regulation, dashboardFilters.year, dashboardFilters.semester, dashboardFilters.mid_exam_type]);
 
   useEffect(() => {
-    if (view === 'admin-users') fetchAdminUsers();
+    if (!user || user.role !== 'ADMIN') return;
+    if (view === 'admin-create-user' || view === 'admin-view-users' || view === 'admin-assign-subjects') fetchAdminUsers();
   }, [view, user]);
+
+  useEffect(() => {
+    if (view !== 'admin-data') return;
+    fetchAdminData(adminDataTable);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, user, adminDataTable]);
+
+  const fetchAdminAssignments = async () => {
+    if (!user || user.role !== 'ADMIN') return;
+    setAdminAssignmentsLoading(true);
+    setAdminAssignmentsError(null);
+    try {
+      const res = await apiFetch('/api/admin/faculty-subjects');
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to load assignments');
+      setAdminAssignments(Array.isArray(data?.assignments) ? data.assignments : []);
+    } catch (e: any) {
+      setAdminAssignmentsError(e?.message || 'Failed to load assignments');
+      setAdminAssignments([]);
+    } finally {
+      setAdminAssignmentsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!user || user.role !== 'ADMIN') return;
+    if (view !== 'admin-view-assignments') return;
+    fetchAdminAssignments();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, user?.faculty_id, user?.role]);
+
+  useEffect(() => {
+    const loadAssignSubjects = async () => {
+      if (!user || user.role !== 'ADMIN') return;
+      if (view !== 'admin-assign-subjects') return;
+      if (!adminAssignForm.faculty_id || !adminAssignForm.regulation || !adminAssignForm.year || !adminAssignForm.semester) {
+        setAdminAssignSubjects([]);
+        return;
+      }
+
+      const faculty = adminUsers.find((u) => u.faculty_id === adminAssignForm.faculty_id);
+      if (!faculty) {
+        setAdminAssignSubjects([]);
+        return;
+      }
+
+      const params = new URLSearchParams({
+        regulation: adminAssignForm.regulation,
+        semester: adminAssignForm.semester,
+      });
+
+      const reg = String(adminAssignForm.regulation || '').toUpperCase();
+      const year = String(adminAssignForm.year || '').toUpperCase();
+      if (reg === 'R25' && year === 'I') {
+        params.set('department', 'H&S');
+        params.append('branch', faculty.department);
+      } else {
+        params.set('department', faculty.department);
+        params.append('year', adminAssignForm.year);
+      }
+
+      setAdminAssignSubjectsLoading(true);
+      try {
+        const res = await fetch(`/api/subjects?${params.toString()}`);
+        const data = await res.json().catch(() => []);
+        if (!res.ok) throw new Error(data?.error || 'Failed to load subjects');
+        setAdminAssignSubjects(Array.isArray(data) ? data : []);
+      } catch {
+        setAdminAssignSubjects([]);
+      } finally {
+        setAdminAssignSubjectsLoading(false);
+      }
+    };
+
+    loadAssignSubjects();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, user?.role, adminAssignForm.faculty_id, adminAssignForm.regulation, adminAssignForm.year, adminAssignForm.semester, adminUsers]);
+
+  const handleAdminAssignSubject = async () => {
+    if (!user || user.role !== 'ADMIN') return;
+    setAdminAssignError(null);
+    setAdminAssignNotice(null);
+    try {
+      if (!adminAssignForm.faculty_id) throw new Error('Select a faculty');
+      if (!adminAssignForm.subject_name || !adminAssignForm.subject_code) throw new Error('Select a subject');
+
+      const res = await apiFetch('/api/admin/faculty-subjects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          faculty_id: adminAssignForm.faculty_id,
+          regulation: adminAssignForm.regulation,
+          year: adminAssignForm.year,
+          semester: adminAssignForm.semester,
+          subject_name: adminAssignForm.subject_name,
+          subject_code: adminAssignForm.subject_code,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) throw new Error(data?.error || 'Assignment failed');
+      setAdminAssignNotice('Subject assigned successfully.');
+      setAdminAssignForm((p) => ({ ...p, subject_name: '', subject_code: '' }));
+      await fetchAdminAssignments();
+    } catch (e: any) {
+      setAdminAssignError(e?.message || 'Assignment failed');
+    }
+  };
 
   useEffect(() => {
     const onMouseDown = (e: MouseEvent) => {
@@ -1006,6 +1606,14 @@ export default function App() {
 
   useEffect(() => {
     if (!user) return;
+    if (view !== 'evaluation') return;
+    if (user.role !== 'HOD') return;
+    loadHodSubmissions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, user?.role, user?.department]);
+
+  useEffect(() => {
+    if (!user) return;
     if (view !== 'profile-edit') return;
     setProfileForm({
       name: user.name || '',
@@ -1014,10 +1622,106 @@ export default function App() {
     setProfileSaveError(null);
   }, [view, user]);
 
+  const apiFetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const headers = new Headers(init.headers || {});
+    if (authToken) headers.set('Authorization', `Bearer ${authToken}`);
+    return fetch(input, { ...init, headers });
+  };
+
+  const navigate = (path: string) => {
+    window.history.pushState({}, '', path);
+    const nextIsAdmin = path.startsWith('/admin');
+    setIsAdminRoute(nextIsAdmin);
+    setView((prev) => {
+      if (nextIsAdmin) {
+        if (user?.role === 'ADMIN') {
+          if (!String(prev).startsWith('admin-')) return 'admin-create-user';
+          if (prev === 'admin-auth') return 'admin-create-user';
+          return prev;
+        }
+        return 'admin-auth';
+      }
+
+      if (!user) return 'login';
+      if (String(prev).startsWith('admin-')) return 'dashboard';
+      return prev;
+    });
+  };
+
+  useEffect(() => {
+    const onPop = () => {
+      const nextIsAdmin = window.location.pathname.startsWith('/admin');
+      setIsAdminRoute(nextIsAdmin);
+      setView((prev) => {
+        if (nextIsAdmin) {
+          if (user?.role === 'ADMIN') {
+            if (!String(prev).startsWith('admin-')) return 'admin-create-user';
+            if (prev === 'admin-auth') return 'admin-create-user';
+            return prev;
+          }
+          return 'admin-auth';
+        }
+
+        if (!user) return 'login';
+        if (String(prev).startsWith('admin-')) return 'dashboard';
+        return prev;
+      });
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [user]);
+
+  useEffect(() => {
+    if (view !== 'admin-auth') return;
+
+    let cancelled = false;
+    const run = async () => {
+      setAdminExists(null);
+      try {
+        const res = await fetch('/api/admin/auth/exists');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error || 'Failed to check admin status');
+        if (cancelled) return;
+        const exists = Boolean(data?.exists);
+        setAdminExists(exists);
+        if (exists) setAdminAuthMode('signin');
+      } catch {
+        if (!cancelled) setAdminExists(null);
+      }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [view]);
+
+  useEffect(() => {
+    const loadAssignedSubjects = async () => {
+      if (!user || user.role !== 'FACULTY') return;
+      try {
+        const res = await apiFetch('/api/faculty/subjects');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data?.error || 'Failed to load assigned subjects');
+        setAssignedSubjects(Array.isArray(data?.assignments) ? data.assignments : []);
+      } catch {
+        setAssignedSubjects([]);
+      }
+    };
+
+    if (!user || !authToken) {
+      setAssignedSubjects([]);
+      return;
+    }
+    loadAssignedSubjects();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.faculty_id, user?.role, authToken]);
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setAuthNotice(null);
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
@@ -1026,7 +1730,15 @@ export default function App() {
       });
       const data = await res.json();
       if (data.success) {
+        if (data.user?.role === 'ADMIN') {
+          setError('Please use the Admin Panel at /admin to sign in.');
+          setLoading(false);
+          navigate('/admin');
+          return;
+        }
         setUser(data.user);
+        setAuthToken(String(data.token || ''));
+        navigate('/');
         setView('dashboard');
       } else {
         setError(data.error);
@@ -1042,6 +1754,7 @@ export default function App() {
     e.preventDefault();
     setLoading(true);
     setError(null);
+    setAuthNotice(null);
 
     // Validation
     if (!authForm.name || !authForm.faculty_id || !authForm.password) {
@@ -1070,8 +1783,8 @@ export default function App() {
       });
       const data = await res.json();
       if (data.success) {
-        setView('login');
-        alert("Account created! Please login.");
+        setAuthMode('signin');
+        setAuthNotice('Account created. Please sign in.');
       } else {
         setError(data.error);
       }
@@ -1082,10 +1795,50 @@ export default function App() {
     }
   };
 
+  const handleAdminAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setAdminAuthError(null);
+
+    try {
+      if (adminAuthMode === 'signup' && adminExists) throw new Error('Admin already exists. Please sign in.');
+      const endpoint = adminAuthMode === 'signup' ? '/api/admin/auth/signup' : '/api/admin/auth/login';
+      const payload =
+        adminAuthMode === 'signup'
+          ? { name: adminAuthForm.name, email: adminAuthForm.email, password: adminAuthForm.password }
+          : { email: adminAuthForm.email, password: adminAuthForm.password };
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) throw new Error(data?.error || 'Authentication failed');
+      if (data.user?.role !== 'ADMIN') throw new Error('Only Admin can access this panel');
+
+      setUser(data.user);
+      setAuthToken(String(data.token || ''));
+      setView('admin-create-user');
+      window.history.pushState({}, '', '/admin');
+      setIsAdminRoute(true);
+    } catch (e: any) {
+      setAdminAuthError(e?.message || 'Authentication failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleLogout = () => {
+    const target = isAdminRoute ? '/admin' : '/';
     setUser(null);
-    setView('login');
+    setAuthToken('');
+    window.history.pushState({}, '', target);
+    setIsAdminRoute(target.startsWith('/admin'));
+    setView(target.startsWith('/admin') ? 'admin-auth' : 'login');
     setAuthForm({ faculty_id: '', name: '', email: '', password: '', department: 'CSE', role: 'FACULTY' });
+    setAuthMode('signin');
+    setAuthNotice(null);
   };
 
   function parseCsvStudents(csvText: string): Array<{ roll_number: string; student_name: string }> {
@@ -1179,8 +1932,9 @@ export default function App() {
 
     setEvalLoading(true);
     try {
-      const students = await parseStudentListFile(evalUploadFile);
-      if (!students.length) throw new Error('No valid students found in the file.');
+      const studentsRaw = await parseStudentListFile(evalUploadFile);
+      if (!studentsRaw.length) throw new Error('No valid students found in the file.');
+      const students = sortStudentsByRollNumber(studentsRaw);
 
       const res = await fetch('/api/eval/student-lists', {
         method: 'POST',
@@ -1206,21 +1960,24 @@ export default function App() {
     }
   };
 
-  const loadEvaluationStudentList = async () => {
+  const loadEvaluationStudentList = async (opts?: { activeFacultyId?: string; filters?: typeof evalFilters }) => {
     if (!user) return;
+    const filters = opts?.filters || evalFilters;
     setEvalError(null);
     setEvalList(null);
     setEvalMarks({});
     setEvalStep('descriptive');
+    setEvalSubmitted(false);
+    setEvalActiveFacultyId(opts?.activeFacultyId || user.faculty_id);
 
     setEvalLoading(true);
     try {
       const qs = new URLSearchParams({
         department: user.department,
-        ...(user.department === 'H&S' ? { branch: evalFilters.branch } : {}),
-        regulation: evalFilters.regulation,
-        year: evalFilters.year,
-        section: evalFilters.section,
+        ...(user.department === 'H&S' ? { branch: filters.branch } : {}),
+        regulation: filters.regulation,
+        year: filters.year,
+        section: filters.section,
       });
       const res = await fetch(`/api/eval/student-lists?${qs.toString()}`);
       const data = await res.json().catch(() => ({}));
@@ -1228,15 +1985,15 @@ export default function App() {
       setEvalList(data.list);
 
       // Prefill CO labels from latest approved paper (if exists).
-      if (evalFilters.subject_code) {
+      if (filters.subject_code) {
         try {
           const paperQs = new URLSearchParams({
             department: user.department,
-            ...(user.department === 'H&S' ? { branch: evalFilters.branch } : {}),
-            regulation: evalFilters.regulation,
-            year: evalFilters.year,
-            mid_exam_type: evalFilters.mid_type,
-            subject_code: evalFilters.subject_code,
+            ...(user.department === 'H&S' ? { branch: filters.branch } : {}),
+            regulation: filters.regulation,
+            year: filters.year,
+            mid_exam_type: filters.mid_type,
+            subject_code: filters.subject_code,
             status: 'Approved',
           });
           const pRes = await fetch(`/api/papers?${paperQs.toString()}`);
@@ -1254,15 +2011,15 @@ export default function App() {
       }
 
       // Load previously saved marks (if any).
-      if (evalFilters.mid_type && evalFilters.subject_code) {
+      if (filters.mid_type && filters.subject_code) {
         const mQs = new URLSearchParams({
           department: user.department,
-          ...(user.department === 'H&S' ? { branch: evalFilters.branch } : {}),
-          regulation: evalFilters.regulation,
-          year: evalFilters.year,
-          section: evalFilters.section,
-          mid_type: evalFilters.mid_type,
-          subject_code: evalFilters.subject_code,
+          ...(user.department === 'H&S' ? { branch: filters.branch } : {}),
+          regulation: filters.regulation,
+          year: filters.year,
+          section: filters.section,
+          mid_type: filters.mid_type,
+          subject_code: filters.subject_code,
         });
         const mRes = await fetch(`/api/eval/marks?${mQs.toString()}`);
         const mData = await mRes.json().catch(() => ({}));
@@ -1278,6 +2035,7 @@ export default function App() {
           setEvalMarks(next);
         }
       }
+
     } catch (e: any) {
       setEvalError(e?.message || 'Failed to load');
     } finally {
@@ -1306,7 +2064,7 @@ export default function App() {
     setEvalLoading(true);
     setEvalError(null);
     try {
-      const entries = evalList.students.map((s) => {
+      const entries = evalStudentsSorted.map((s) => {
         const m = evalMarks[s.roll_number] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
         return {
           roll_number: s.roll_number,
@@ -1321,7 +2079,8 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          faculty_id: user.faculty_id,
+          faculty_id: evalActiveFacultyId || user.faculty_id,
+          actor_id: user.faculty_id,
           department: user.department,
           branch: user.department === 'H&S' ? evalFilters.branch : '',
           regulation: evalFilters.regulation,
@@ -1338,6 +2097,148 @@ export default function App() {
       alert(`Saved marks for ${data?.saved || entries.length} students.`);
     } catch (e: any) {
       setEvalError(e?.message || 'Save failed');
+    } finally {
+      setEvalLoading(false);
+    }
+  };
+
+  const submitEvaluation = async () => {
+    if (!user) return;
+    if (user.role !== 'FACULTY') return;
+    if (!evalList) return;
+    if (!evalFilters.subject_name || !evalFilters.subject_code) {
+      setEvalError('Subject Name and Subject Code are required.');
+      return;
+    }
+
+    setEvalLoading(true);
+    setEvalError(null);
+    try {
+      const res = await fetch('/api/eval/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          faculty_id: user.faculty_id,
+          department: user.department,
+          branch: user.department === 'H&S' ? evalFilters.branch : '',
+          regulation: evalFilters.regulation,
+          year: evalFilters.year,
+          section: evalFilters.section,
+          mid_type: evalFilters.mid_type,
+          subject_name: evalFilters.subject_name,
+          subject_code: evalFilters.subject_code,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Submit failed');
+      setEvalSubmitted(true);
+      alert('Submitted to HOD successfully.');
+    } catch (e: any) {
+      setEvalError(e?.message || 'Submit failed');
+    } finally {
+      setEvalLoading(false);
+    }
+  };
+
+  function buildEvaluationSheetRows() {
+    if (!evalList) return [];
+
+    const descCO = ['CO1', 'CO2', 'CO2', 'CO3', 'CO4', 'CO5'];
+    const objCO = ['CO1', 'CO1', 'CO2', 'CO2', 'CO3', 'CO3', 'CO4', 'CO4', 'CO5', 'CO5'];
+
+    const headers: any[] = [
+      ['Department', user?.department || '', 'Regulation', evalFilters.regulation, 'Year', evalFilters.year, 'Section', evalFilters.section],
+      ['Subject Name', evalFilters.subject_name, 'Subject Code', evalFilters.subject_code, 'Mid Type', evalFilters.mid_type],
+      [],
+    ];
+
+    const tableHeader = [
+      'Roll Number',
+      'Student Name',
+      ...Array.from({ length: 6 }, (_, i) => `Q${i + 1} (${(evalCoLabels[i] || descCO[i])})`),
+      ...Array.from({ length: 10 }, (_, i) => `I${i + 1} (${(evalObjCoLabelsMcq[i] || objCO[i])})`),
+      ...Array.from({ length: 10 }, (_, i) => `II${i + 1} (${(evalObjCoLabelsFb[i] || objCO[i])})`),
+      'Total',
+    ];
+
+    const rows = evalStudentsSorted.map((s) => {
+      const m = evalMarks[s.roll_number] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
+      const desc = m.descriptive.map((v) => (v ?? ''));
+      const mcq = m.mcq.map((v) => (v ?? ''));
+      const fb = m.fb.map((v) => (v ?? ''));
+      const total = [...m.descriptive, ...m.mcq, ...m.fb].reduce((sum: number, v: any) => sum + (Number.isFinite(Number(v)) ? Number(v) : 0), 0);
+      return [s.roll_number, s.student_name, ...desc, ...mcq, ...fb, total];
+    });
+
+    return [...headers, tableHeader, ...rows];
+  }
+
+  const downloadEvaluationExcel = async () => {
+    if (!evalList) return;
+    const xlsx = await import('xlsx');
+    const aoa = buildEvaluationSheetRows();
+    const ws = xlsx.utils.aoa_to_sheet(aoa);
+    const wb = xlsx.utils.book_new();
+    xlsx.utils.book_append_sheet(wb, ws, 'Marks');
+    const safe = (evalFilters.subject_code || 'evaluation').replaceAll(/[^a-zA-Z0-9-_]+/g, '_');
+    xlsx.writeFile(wb, `Evaluation_${safe}_${evalFilters.section}.xlsx`);
+  };
+
+  const downloadEvaluationPdf = () => {
+    if (!evalList) return;
+    const rows = buildEvaluationSheetRows();
+    const title = `Evaluation Sheet - ${evalFilters.subject_code}`;
+    const html = `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${title}</title>
+  <style>
+    @page{ size:A4 landscape; margin:10mm; }
+    body{ font-family: Arial, sans-serif; color:#000; }
+    table{ width:100%; border-collapse: collapse; font-size:10px; }
+    th,td{ border:1px solid #000; padding:4px; }
+    th{ background:#f3f3f3; }
+    .meta{ font-size:12px; margin-bottom:8px; }
+  </style>
+</head>
+<body>
+  <div class="meta"><b>Department:</b> ${evalFilters.branch ? `${user?.department} (${evalFilters.branch})` : user?.department} &nbsp; <b>Reg:</b> ${evalFilters.regulation} &nbsp; <b>Year:</b> ${evalFilters.year} &nbsp; <b>Sec:</b> ${evalFilters.section} &nbsp; <b>Mid:</b> ${evalFilters.mid_type}</div>
+  <div class="meta"><b>Subject:</b> ${evalFilters.subject_name} &nbsp; <b>Code:</b> ${evalFilters.subject_code}</div>
+  <table>
+    <thead>
+      <tr>${rows[3].map((h: any) => `<th>${String(h)}</th>`).join('')}</tr>
+    </thead>
+    <tbody>
+      ${rows.slice(4).map((r: any[]) => `<tr>${r.map((c) => `<td>${c === '' ? '' : String(c)}</td>`).join('')}</tr>`).join('')}
+    </tbody>
+  </table>
+  <script>window.addEventListener('load',()=>window.print());</script>
+</body>
+</html>`;
+    const w = window.open('', '_blank', 'noopener,noreferrer');
+    if (!w) return;
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+  };
+
+  const loadHodSubmissions = async () => {
+    if (!user) return;
+    if (user.role !== 'HOD') return;
+    setEvalLoading(true);
+    setEvalError(null);
+    try {
+      const qs = new URLSearchParams({
+        hod_faculty_id: user.faculty_id,
+        ...(user.department === 'H&S' ? { branch: evalUploadFilters.branch } : {}),
+      });
+      const res = await fetch(`/api/eval/submissions?${qs.toString()}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to load submissions');
+      setEvalSubmissions(data.submissions || []);
+    } catch (e: any) {
+      setEvalError(e?.message || 'Failed to load submissions');
     } finally {
       setEvalLoading(false);
     }
@@ -1385,7 +2286,7 @@ export default function App() {
       faculty_id: u.faculty_id,
       name: u.name,
       department: u.department || '',
-      role: (u.role === 'HOD' ? 'HOD' : 'FACULTY') as Role,
+      role: (u.role as Role) || ('FACULTY' as Role),
       status: (u.status || 'Active') as any,
     });
     setAdminActionError(null);
@@ -1403,15 +2304,15 @@ export default function App() {
     if (!user || user.role !== 'ADMIN' || !adminSelectedUser) return;
     setAdminActionError(null);
     try {
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(adminSelectedUser.faculty_id)}`, {
+      const res = await apiFetch(`/api/admin/users/${encodeURIComponent(adminSelectedUser.faculty_id)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(adminEditForm),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || 'Failed to update user');
       await fetchAdminUsers();
-      setView('admin-users');
+      setView('admin-view-users');
     } catch (err: any) {
       setAdminActionError(err.message);
     }
@@ -1421,12 +2322,12 @@ export default function App() {
     if (!user || user.role !== 'ADMIN') return;
     setAdminActionError(null);
     try {
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(u.faculty_id)}/status`, {
+      const res = await apiFetch(`/api/admin/users/${encodeURIComponent(u.faculty_id)}/status`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'Disabled' }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || 'Failed to disable account');
       await fetchAdminUsers();
     } catch (err: any) {
@@ -1446,14 +2347,16 @@ export default function App() {
     }
     setAdminActionError(null);
     try {
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(adminSelectedUser.faculty_id)}/reset-password`, {
+      const res = await apiFetch(`/api/admin/users/${encodeURIComponent(adminSelectedUser.faculty_id)}/reset-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ new_password: adminResetForm.new_password }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || 'Failed to reset password');
-      setView('admin-users');
+      setAdminNotice('Password updated. Copy and share it with the user.');
+      setTimeout(() => setAdminNotice(null), 3000);
+      setView('admin-view-users');
     } catch (err: any) {
       setAdminActionError(err.message);
     }
@@ -1530,7 +2433,103 @@ export default function App() {
 
   // --- Views ---
 
-  if (view === 'login' || view === 'signup') {
+  if (view === 'admin-auth') {
+    return (
+      <div className="min-h-screen bg-white flex items-center justify-center p-4">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-md border border-primary/10"
+        >
+          <div className="flex flex-col items-center mb-8">
+            <div className="w-16 h-16 bg-primary rounded-2xl flex items-center justify-center mb-4 shadow-lg shadow-primary/20">
+              <ShieldCheck className="text-white w-8 h-8" />
+            </div>
+            <h1 className="text-3xl font-bold text-black tracking-tight">Admin Panel</h1>
+            <p className="text-primary/60 text-sm mt-1">Academix Administration</p>
+          </div>
+
+          {adminExists === false && (
+            <div className="grid grid-cols-2 gap-2 mb-4">
+              <Button
+                variant={adminAuthMode === 'signup' ? 'primary' : 'secondary'}
+                className="h-10"
+                onClick={() => {
+                  setAdminAuthMode('signup');
+                  setAdminAuthError(null);
+                }}
+              >
+                Admin Sign Up
+              </Button>
+              <Button
+                variant={adminAuthMode === 'signin' ? 'primary' : 'secondary'}
+                className="h-10"
+                onClick={() => {
+                  setAdminAuthMode('signin');
+                  setAdminAuthError(null);
+                }}
+              >
+                Admin Sign In
+              </Button>
+            </div>
+          )}
+
+          {adminExists && (
+            <div className="p-3 bg-primary-light/30 text-primary text-sm rounded-lg border border-primary/10 mb-4">
+              Admin account already exists. Sign up is disabled.
+            </div>
+          )}
+
+          <form onSubmit={handleAdminAuth} className="space-y-4">
+            {adminAuthMode === 'signup' && adminExists === false && (
+              <Input
+                label="Name"
+                placeholder="Enter your name"
+                value={adminAuthForm.name}
+                onChange={(e: any) => setAdminAuthForm((p) => ({ ...p, name: e.target.value }))}
+                required
+              />
+            )}
+            <Input
+              label="Email"
+              type="email"
+              placeholder="admin@college.edu"
+              value={adminAuthForm.email}
+              onChange={(e: any) => setAdminAuthForm((p) => ({ ...p, email: e.target.value }))}
+              required
+            />
+            <Input
+              label="Password"
+              type="password"
+              placeholder="••••••••"
+              value={adminAuthForm.password}
+              onChange={(e: any) => setAdminAuthForm((p) => ({ ...p, password: e.target.value }))}
+              required
+            />
+
+            {adminAuthError && (
+              <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2 border border-red-100">
+                <AlertCircle size={16} />
+                {adminAuthError}
+              </div>
+            )}
+
+            <Button type="submit" className="w-full h-11" disabled={loading}>
+              {loading ? 'Processing...' : adminAuthMode === 'signup' ? 'Create Admin Account' : 'Sign In'}
+            </Button>
+          </form>
+
+          <div className="mt-6 text-center">
+            <button type="button" className="text-sm text-primary hover:underline" onClick={() => navigate('/')}>
+              Back to Faculty Login
+            </button>
+          </div>
+        </motion.div>
+      </div>
+    );
+  }
+
+  if (view === 'login') {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center p-4">
         <motion.div
@@ -1546,52 +2545,17 @@ export default function App() {
             <p className="text-primary/60 text-sm mt-1">College Academic Management System</p>
           </div>
 
-          <form onSubmit={view === 'login' ? handleLogin : handleSignup} className="space-y-4">
-            {view === 'signup' && (
-              <>
-                <Input
-                  label="Full Name"
-                  placeholder="Enter your name"
-                  value={authForm.name}
-                  onChange={(e: any) => setAuthForm({ ...authForm, name: e.target.value })}
-                  required
-                />
-                <Input
-                  label="Email (Optional)"
-                  placeholder="Enter your email"
-                  type="email"
-                  value={authForm.email}
-                  onChange={(e: any) => setAuthForm({ ...authForm, email: e.target.value })}
-                />
-                <Select
-                  label="Role"
-                  value={authForm.role}
-                  onChange={(e: any) => setAuthForm({ ...authForm, role: e.target.value as Role })}
-                  options={[
-                    { label: 'Faculty', value: 'FACULTY' },
-                    { label: 'HOD', value: 'HOD' },
-                    { label: 'Exam Branch', value: 'EXAM_BRANCH' },
-                    { label: 'Admin', value: 'ADMIN' },
-                  ]}
-                />
-                {(authForm.role === 'FACULTY' || authForm.role === 'HOD') && (
-                  <Select
-                    label="Department"
-                    value={authForm.department}
-                    onChange={(e: any) => setAuthForm({ ...authForm, department: e.target.value })}
-                    options={[
-                      { label: 'CSE', value: 'CSE' },
-                      { label: 'CSD', value: 'CSD' },
-                      { label: 'CSM', value: 'CSM' },
-                      { label: 'ECE', value: 'ECE' },
-                      { label: 'H&S', value: 'H&S' },
-                    ]}
-                  />
-                )}
-              </>
-            )}
+          {authNotice && (
+            <div className="p-3 bg-emerald-50 text-emerald-700 text-sm rounded-lg flex items-center gap-2 border border-emerald-200 mb-4">
+              <CheckCircle size={16} />
+              {authNotice}
+            </div>
+          )}
+
+          {true ? (
+            <form onSubmit={handleLogin} className="space-y-4">
             <Input
-              label="Faculty/Staff ID"
+              label="Faculty ID"
               placeholder="Enter your ID"
               value={authForm.faculty_id}
               onChange={(e: any) => setAuthForm({ ...authForm, faculty_id: e.target.value })}
@@ -1614,16 +2578,81 @@ export default function App() {
             )}
 
             <Button type="submit" className="w-full h-11" disabled={loading}>
-              {loading ? "Processing..." : view === 'login' ? "Sign In" : "Create Account"}
+              {loading ? "Processing..." : "Sign In"}
             </Button>
           </form>
 
+          ) : (
+            <form onSubmit={handleSignup} className="space-y-4">
+              <Input
+                label="Name"
+                placeholder="Enter your name"
+                value={authForm.name}
+                onChange={(e: any) => setAuthForm({ ...authForm, name: e.target.value })}
+                required
+              />
+              <Input
+                label="Faculty/Staff ID"
+                placeholder="Create an ID"
+                value={authForm.faculty_id}
+                onChange={(e: any) => setAuthForm({ ...authForm, faculty_id: e.target.value })}
+                required
+              />
+              <Input
+                label="Email (Optional)"
+                type="email"
+                placeholder="Enter email"
+                value={authForm.email}
+                onChange={(e: any) => setAuthForm({ ...authForm, email: e.target.value })}
+              />
+              <Input
+                label="Password"
+                type="password"
+                placeholder="Create a password"
+                value={authForm.password}
+                onChange={(e: any) => setAuthForm({ ...authForm, password: e.target.value })}
+                required
+              />
+              <Select
+                label="Role"
+                value={authForm.role}
+                onChange={(e: any) => setAuthForm({ ...authForm, role: e.target.value as Role })}
+                options={[
+                  { label: 'HOD', value: 'HOD' },
+                  { label: 'Faculty', value: 'FACULTY' },
+                  { label: 'Exam Branch', value: 'EXAM_BRANCH' },
+                ]}
+              />
+              <Select
+                label="Department"
+                value={authForm.department}
+                onChange={(e: any) => setAuthForm({ ...authForm, department: e.target.value })}
+                disabled={authForm.role === 'EXAM_BRANCH'}
+                options={[
+                  { label: 'CSE', value: 'CSE' },
+                  { label: 'CSD', value: 'CSD' },
+                  { label: 'CSM', value: 'CSM' },
+                  { label: 'ECE', value: 'ECE' },
+                  { label: 'H&S', value: 'H&S' },
+                ]}
+              />
+
+              {error && (
+                <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2 border border-red-100">
+                  <AlertCircle size={16} />
+                  {error}
+                </div>
+              )}
+
+              <Button type="submit" className="w-full h-11" disabled={loading}>
+                {loading ? "Processing..." : "Create Account"}
+              </Button>
+            </form>
+          )}
+
           <div className="mt-6 text-center">
-            <button
-              onClick={() => setView(view === 'login' ? 'signup' : 'login')}
-              className="text-sm text-primary hover:text-primary-hover font-medium"
-            >
-              {view === 'login' ? "Don't have an account? Sign up" : "Already have an account? Sign in"}
+            <button type="button" className="text-sm text-primary hover:underline" onClick={() => navigate('/admin')}>
+              Admin Login
             </button>
           </div>
         </motion.div>
@@ -1636,7 +2665,13 @@ export default function App() {
       {/* Header */}
       <header className="bg-primary border-b border-primary-hover sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-3 cursor-pointer" onClick={() => setView('dashboard')}>
+          <div
+            className="flex items-center gap-3 cursor-pointer"
+            onClick={() => {
+              if (user?.role === 'ADMIN') navigate('/admin');
+              else setView('dashboard');
+            }}
+          >
             <div className="w-10 h-10 bg-white/10 rounded-xl flex items-center justify-center border border-white/20">
               <BookOpen className="text-white w-5 h-5" />
             </div>
@@ -1734,7 +2769,10 @@ export default function App() {
               {user?.role === 'ADMIN' && (
                 <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
                   <div
-                    onClick={() => setView('admin-users')}
+                    onClick={() => {
+                      navigate('/admin');
+                      setView('admin-create-user');
+                    }}
                     className="bg-white p-6 rounded-2xl border border-primary/10 shadow-sm hover:shadow-md hover:border-primary/30 transition-all cursor-pointer group"
                   >
                     <div className="w-12 h-12 bg-primary-light rounded-xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
@@ -1742,6 +2780,17 @@ export default function App() {
                     </div>
                     <h3 className="font-semibold text-black">User Management</h3>
                     <p className="text-sm text-primary/60">Manage faculty accounts</p>
+                  </div>
+
+                  <div
+                    onClick={() => setView('admin-data')}
+                    className="bg-white p-6 rounded-2xl border border-primary/10 shadow-sm hover:shadow-md hover:border-primary/30 transition-all cursor-pointer group"
+                  >
+                    <div className="w-12 h-12 bg-primary-light rounded-xl flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
+                      <LayoutDashboard className="text-primary w-6 h-6" />
+                    </div>
+                    <h3 className="font-semibold text-black">Data Viewer</h3>
+                    <p className="text-sm text-primary/60">View system tables</p>
                   </div>
                 </div>
               )}
@@ -1995,9 +3044,9 @@ export default function App() {
               className="max-w-3xl mx-auto space-y-6"
             >
               <div className="flex items-center justify-between">
-                <Button variant="ghost" onClick={() => setView('dashboard')}>
+                <Button variant="ghost" onClick={() => setView('admin-create-user')}>
                   <ChevronLeft size={18} />
-                  Back to Dashboard
+                  Back to Admin
                 </Button>
                 <Button variant="secondary" onClick={() => setView('profile-edit')}>
                   <Users size={18} />
@@ -2124,21 +3173,35 @@ export default function App() {
             </motion.div>
           )}
 
-          {view === 'admin-users' && user?.role === 'ADMIN' && (
+          {(view === 'admin-create-user' || view === 'admin-view-users') && user?.role === 'ADMIN' && (
             <motion.div
-              key="admin-users"
+              key={view}
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 20 }}
               className="space-y-6"
             >
-              <div className="flex items-center justify-between">
-                <Button variant="ghost" onClick={() => setView('dashboard')}>
-                  <ChevronLeft size={18} />
-                  Back to Dashboard
-                </Button>
-                <h2 className="text-2xl font-bold text-black">User Management</h2>
-              </div>
+              <div className="bg-white border border-primary/10 rounded-xl overflow-hidden">
+                <div className="grid grid-cols-1 md:grid-cols-[260px_1fr]">
+                  <div className="md:border-r md:border-primary/10">
+                    <AdminSidebar current={view} onSelect={setView} />
+                  </div>
+                  <div className="p-4 md:p-6 space-y-6">
+                  <div className="flex items-center justify-between gap-4">
+                    <h2 className="text-2xl font-bold text-black">{view === 'admin-create-user' ? 'Create Users' : 'View Users'}</h2>
+                    {view === 'admin-view-users' && (
+                      <Button variant="secondary" onClick={fetchAdminUsers} disabled={adminUsersLoading}>
+                        {adminUsersLoading ? 'Refreshing...' : 'Refresh'}
+                      </Button>
+                    )}
+                  </div>
+
+              {adminNotice && (
+                <div className="p-3 bg-emerald-50 text-emerald-700 text-sm rounded-lg flex items-center gap-2 border border-emerald-200">
+                  <CheckCircle size={16} />
+                  {adminNotice}
+                </div>
+              )}
 
               {(adminUsersError || adminActionError) && (
                 <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2 border border-red-100">
@@ -2147,15 +3210,182 @@ export default function App() {
                 </div>
               )}
 
-              <div className="bg-white rounded-2xl border border-primary/10 shadow-sm overflow-hidden">
-                <div className="px-6 py-4 border-b border-primary/10 bg-primary-light/30 flex items-center justify-between">
+              {adminCreateError && (
+                <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2 border border-red-100">
+                  <AlertCircle size={16} />
+                  {adminCreateError}
+                </div>
+              )}
+
+              {view === 'admin-create-user' && (
+              <div className="bg-white rounded-lg border border-primary/10 overflow-hidden">
+                <div className="px-6 py-4 border-b border-primary/10 bg-primary-light/20 flex items-center justify-between">
+                  <div className="font-bold text-primary flex items-center gap-2">
+                    <Plus size={18} />
+                    Create Account
+                  </div>
+                  <Button onClick={handleAdminCreateUser} disabled={adminCreating}>
+                    <Save size={18} />
+                    {adminCreating ? 'Creating...' : 'Create'}
+                  </Button>
+                </div>
+                <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <Input label="Name" value={adminCreateForm.name} onChange={(e: any) => setAdminCreateForm((p) => ({ ...p, name: e.target.value }))} />
+                  <Input label="Faculty ID" value={adminCreateForm.faculty_id} onChange={(e: any) => setAdminCreateForm((p) => ({ ...p, faculty_id: e.target.value }))} />
+                  <Input label="Email (Optional)" type="email" value={adminCreateForm.email} onChange={(e: any) => setAdminCreateForm((p) => ({ ...p, email: e.target.value }))} />
+                  <div className="space-y-1 w-full">
+                    <label className="text-sm font-medium text-black">Password</label>
+                    <div className="flex gap-2">
+                      <input
+                        value={adminCreateForm.password}
+                        onChange={(e: any) => setAdminCreateForm((p) => ({ ...p, password: e.target.value }))}
+                        type={adminShowCreatePassword ? 'text' : 'password'}
+                        className="w-full px-3 py-2 border border-primary/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
+                      />
+                      <Button
+                        variant="secondary"
+                        className="px-3"
+                        onClick={() => setAdminCreateForm((p) => ({ ...p, password: generatePassword(12) }))}
+                        title="Generate password"
+                      >
+                        <RefreshCw size={16} />
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        className="px-3"
+                        onClick={() => copyToClipboard(adminCreateForm.password || '')}
+                        disabled={!adminCreateForm.password}
+                        title="Copy password"
+                      >
+                        <Copy size={16} />
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        className="px-3"
+                        onClick={() => setAdminShowCreatePassword((v) => !v)}
+                        title={adminShowCreatePassword ? 'Hide password' : 'Show password'}
+                      >
+                        {adminShowCreatePassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </Button>
+                    </div>
+                    <div className="text-xs text-primary/60">
+                      Generate a password and share it with the user.
+                    </div>
+                  </div>
+                  <Select
+                    label="Role"
+                    value={adminCreateForm.role}
+                    onChange={(e: any) => setAdminCreateForm((p) => ({ ...p, role: e.target.value as Role }))}
+                    options={[
+                      { label: 'Faculty', value: 'FACULTY' },
+                      { label: 'HOD', value: 'HOD' },
+                      { label: 'Exam Branch', value: 'EXAM_BRANCH' },
+                    ]}
+                  />
+                  <Select
+                    label="Department"
+                    value={adminCreateForm.department}
+                    onChange={(e: any) => setAdminCreateForm((p) => ({ ...p, department: e.target.value }))}
+                    options={[
+                      { label: 'CSE', value: 'CSE' },
+                      { label: 'CSD', value: 'CSD' },
+                      { label: 'CSM', value: 'CSM' },
+                      { label: 'ECE', value: 'ECE' },
+                      { label: 'H&S', value: 'H&S' },
+                    ]}
+                  />
+                </div>
+
+                {adminLastCreated && (
+                  <div className="px-6 pb-6">
+                    <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50">
+                      <div className="font-semibold text-emerald-800">Account created. Copy and share these credentials:</div>
+                      <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <Input label="Faculty/Staff ID" value={adminLastCreated.faculty_id} readOnly />
+                        <div className="space-y-1 w-full">
+                          <label className="text-sm font-medium text-black">Password</label>
+                          <div className="flex gap-2">
+                            <input
+                              value={adminLastCreated.password}
+                              readOnly
+                              type="text"
+                              className="w-full px-3 py-2 border border-primary/10 rounded-lg bg-white"
+                            />
+                            <Button
+                              variant="secondary"
+                              className="px-3"
+                              onClick={() => copyToClipboard(`${adminLastCreated.faculty_id}\n${adminLastCreated.password}`)}
+                              title="Copy ID and password"
+                            >
+                              <Copy size={16} />
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button
+                          variant="secondary"
+                          onClick={() =>
+                            copyToClipboard(
+                              `Academix Login Credentials\nID: ${adminLastCreated.faculty_id}\nPassword: ${adminLastCreated.password}\nRole: ${adminLastCreated.role}`,
+                            )
+                          }
+                        >
+                          <Copy size={16} />
+                          Copy Full Message
+                        </Button>
+                        <Button variant="ghost" onClick={() => setAdminLastCreated(null)}>
+                          Clear
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+              )}
+
+              {view === 'admin-view-users' && (
+              <div className="bg-white rounded-lg border border-primary/10 overflow-hidden">
+                <div className="px-6 py-4 border-b border-primary/10 bg-primary-light/20 flex items-center justify-between">
                   <div className="font-bold text-primary flex items-center gap-2">
                     <Users size={18} />
-                    Faculty Accounts
+                    User Accounts
                   </div>
-                  <Button variant="secondary" onClick={fetchAdminUsers} disabled={adminUsersLoading}>
-                    {adminUsersLoading ? 'Refreshing...' : 'Refresh'}
-                  </Button>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="w-56">
+                      <Input
+                        placeholder="Search name or ID..."
+                        value={adminUserFilters.q}
+                        onChange={(e: any) => setAdminUserFilters((p) => ({ ...p, q: e.target.value }))}
+                      />
+                    </div>
+                    <div className="w-36">
+                      <Select
+                        value={adminUserFilters.department}
+                        onChange={(e: any) => setAdminUserFilters((p) => ({ ...p, department: e.target.value }))}
+                        options={[
+                          { label: 'All Depts', value: '' },
+                          { label: 'CSE', value: 'CSE' },
+                          { label: 'CSD', value: 'CSD' },
+                          { label: 'CSM', value: 'CSM' },
+                          { label: 'ECE', value: 'ECE' },
+                          { label: 'H&S', value: 'H&S' },
+                        ]}
+                      />
+                    </div>
+                    <div className="w-40">
+                      <Select
+                        value={adminUserFilters.role}
+                        onChange={(e: any) => setAdminUserFilters((p) => ({ ...p, role: e.target.value as any }))}
+                        options={[
+                          { label: 'All Roles', value: '' },
+                          { label: 'Faculty', value: 'FACULTY' },
+                          { label: 'HOD', value: 'HOD' },
+                          { label: 'Exam Branch', value: 'EXAM_BRANCH' },
+                        ]}
+                      />
+                    </div>
+                  </div>
                 </div>
 
                 <div className="overflow-x-auto">
@@ -2175,12 +3405,12 @@ export default function App() {
                         <tr>
                           <td colSpan={6} className="px-6 py-10 text-center text-primary/50 text-sm">Loading users...</td>
                         </tr>
-                      ) : adminUsers.length === 0 ? (
+                      ) : visibleAdminUsers.length === 0 ? (
                         <tr>
-                          <td colSpan={6} className="px-6 py-10 text-center text-primary/50 text-sm">No faculty accounts found.</td>
+                          <td colSpan={6} className="px-6 py-10 text-center text-primary/50 text-sm">No user accounts found.</td>
                         </tr>
                       ) : (
-                        adminUsers.map((u) => (
+                        visibleAdminUsers.map((u) => (
                           <tr key={u.faculty_id} className="hover:bg-primary-light/10">
                             <td className="px-6 py-4 text-sm font-semibold text-black">{u.name}</td>
                             <td className="px-6 py-4 text-sm text-primary/60">{u.faculty_id}</td>
@@ -2196,6 +3426,9 @@ export default function App() {
                                 </Button>
                                 <Button variant="secondary" className="px-3 py-1.5 text-sm" onClick={() => openAdminResetPassword(u)}>
                                   Reset Password
+                                </Button>
+                                <Button variant="secondary" className="px-3 py-1.5 text-sm" onClick={() => copyToClipboard(u.faculty_id)} title="Copy ID">
+                                  <Copy size={16} />
                                 </Button>
                                 <Button
                                   variant="danger"
@@ -2214,6 +3447,328 @@ export default function App() {
                   </table>
                 </div>
               </div>
+              )}
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {view === 'admin-assign-subjects' && user?.role === 'ADMIN' && (
+            <motion.div
+              key="admin-assign-subjects"
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+              className="space-y-6"
+            >
+              <div className="bg-white border border-primary/10 rounded-xl overflow-hidden">
+                <div className="grid grid-cols-1 md:grid-cols-[260px_1fr]">
+                  <div className="md:border-r md:border-primary/10">
+                    <AdminSidebar current={view} onSelect={setView} />
+                  </div>
+                  <div className="p-4 md:p-6 space-y-6">
+                  <div className="flex items-center justify-between gap-4">
+                    <h2 className="text-2xl font-bold text-black">Assign Subjects to Faculty</h2>
+                    <Button onClick={handleAdminAssignSubject}>
+                      <Save size={18} />
+                      Assign
+                    </Button>
+                  </div>
+
+                  {(adminAssignmentsError || adminAssignError) && (
+                    <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2 border border-red-100">
+                      <AlertCircle size={16} />
+                      {adminAssignmentsError || adminAssignError}
+                    </div>
+                  )}
+
+                  {adminAssignNotice && (
+                    <div className="p-3 bg-emerald-50 text-emerald-700 text-sm rounded-lg flex items-center gap-2 border border-emerald-200">
+                      <CheckCircle size={16} />
+                      {adminAssignNotice}
+                    </div>
+                  )}
+
+                  <div className="bg-white rounded-lg border border-primary/10 overflow-hidden">
+                    <div className="px-6 py-4 border-b border-primary/10 bg-primary-light/20 flex items-center justify-between">
+                      <div className="font-bold text-primary flex items-center gap-2">
+                        <BookOpen size={18} />
+                        Assignment Details
+                      </div>
+                      <div className="text-xs text-primary/60">
+                        Prevents duplicate assignments
+                      </div>
+                    </div>
+
+                    <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <Select
+                        label="Faculty Name"
+                        value={adminAssignForm.faculty_id}
+                        onChange={(e: any) => setAdminAssignForm((p) => ({ ...p, faculty_id: e.target.value, subject_name: '', subject_code: '' }))}
+                        options={[
+                          { label: 'Select Faculty', value: '' },
+                          ...(adminUsers || [])
+                            .filter((u) => u.role === 'FACULTY')
+                            .map((u) => ({ label: `${u.name} (${u.faculty_id})`, value: u.faculty_id })),
+                        ]}
+                      />
+
+                      <Input
+                        label="Faculty ID"
+                        value={adminAssignForm.faculty_id || ''}
+                        readOnly
+                        disabled
+                      />
+
+                      <Input
+                        label="Department"
+                        value={(adminUsers.find((u) => u.faculty_id === adminAssignForm.faculty_id)?.department || '')}
+                        readOnly
+                        disabled
+                      />
+
+                      <Select
+                        label="Regulation"
+                        value={adminAssignForm.regulation}
+                        onChange={(e: any) => setAdminAssignForm((p) => ({ ...p, regulation: e.target.value, subject_name: '', subject_code: '' }))}
+                        options={[
+                          { label: 'R22', value: 'R22' },
+                          { label: 'R25', value: 'R25' },
+                        ]}
+                      />
+
+                      <Select
+                        label="Year"
+                        value={adminAssignForm.year}
+                        onChange={(e: any) => setAdminAssignForm((p) => ({ ...p, year: e.target.value, subject_name: '', subject_code: '' }))}
+                        options={[
+                          { label: 'I', value: 'I' },
+                          { label: 'II', value: 'II' },
+                          { label: 'III', value: 'III' },
+                          { label: 'IV', value: 'IV' },
+                        ]}
+                      />
+
+                      <Select
+                        label="Semester"
+                        value={adminAssignForm.semester}
+                        onChange={(e: any) => setAdminAssignForm((p) => ({ ...p, semester: e.target.value, subject_name: '', subject_code: '' }))}
+                        options={[
+                          { label: 'Sem I', value: 'I' },
+                          { label: 'Sem II', value: 'II' },
+                        ]}
+                      />
+
+                      <Select
+                        label="Subject Name"
+                        value={adminAssignForm.subject_name}
+                        disabled={!adminAssignForm.faculty_id || !adminAssignForm.regulation || !adminAssignForm.year || !adminAssignForm.semester || adminAssignSubjectsLoading}
+                        onChange={(e: any) => {
+                          const name = e.target.value;
+                          const found = adminAssignSubjects.find((s) => s.subject_name === name);
+                          setAdminAssignForm((p) => ({ ...p, subject_name: name, subject_code: found?.subject_code || '' }));
+                        }}
+                        options={[
+                          {
+                            label: adminAssignSubjectsLoading ? 'Loading subjects...' : !adminAssignForm.faculty_id ? 'Select faculty first' : adminAssignSubjects.length ? 'Select Subject' : 'No subjects found',
+                            value: '',
+                          },
+                          ...adminAssignSubjects.map((s) => ({ label: s.subject_name, value: s.subject_name })),
+                        ]}
+                      />
+
+                      <Input label="Subject Code" value={adminAssignForm.subject_code} readOnly disabled />
+                    </div>
+                  </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {view === 'admin-view-assignments' && user?.role === 'ADMIN' && (
+            <motion.div
+              key="admin-view-assignments"
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+              className="space-y-6"
+            >
+              <div className="bg-white border border-primary/10 rounded-xl overflow-hidden">
+                <div className="grid grid-cols-1 md:grid-cols-[260px_1fr]">
+                  <div className="md:border-r md:border-primary/10">
+                    <AdminSidebar current={view} onSelect={setView} />
+                  </div>
+                  <div className="p-4 md:p-6 space-y-6">
+                  <div className="flex items-center justify-between gap-4">
+                    <h2 className="text-2xl font-bold text-black">Assigned Subjects</h2>
+                    <Button variant="secondary" onClick={fetchAdminAssignments} disabled={adminAssignmentsLoading}>
+                      {adminAssignmentsLoading ? 'Refreshing...' : 'Refresh'}
+                    </Button>
+                  </div>
+
+                  {adminAssignmentsError && (
+                    <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2 border border-red-100">
+                      <AlertCircle size={16} />
+                      {adminAssignmentsError}
+                    </div>
+                  )}
+
+                  <div className="bg-white rounded-lg border border-primary/10 overflow-hidden">
+                    <div className="px-6 py-4 border-b border-primary/10 bg-primary-light/20 flex items-center justify-between gap-4">
+                      <div className="font-bold text-primary flex items-center gap-2">
+                        <FileText size={18} />
+                        Assignments
+                      </div>
+                      <div className="w-64">
+                        <Input
+                          placeholder="Search faculty/subject/code..."
+                          value={adminAssignmentsQ}
+                          onChange={(e: any) => setAdminAssignmentsQ(e.target.value)}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left">
+                        <thead>
+                          <tr className="bg-primary-light/10 text-primary/60 text-xs uppercase tracking-wider font-semibold">
+                            <th className="px-6 py-4">Faculty</th>
+                            <th className="px-6 py-4">Faculty ID</th>
+                            <th className="px-6 py-4">Department</th>
+                            <th className="px-6 py-4">Subject</th>
+                            <th className="px-6 py-4">Code</th>
+                            <th className="px-6 py-4">Reg</th>
+                            <th className="px-6 py-4">Year</th>
+                            <th className="px-6 py-4">Sem</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-primary/5">
+                          {adminAssignmentsLoading && adminAssignments.length === 0 ? (
+                            <tr>
+                              <td colSpan={8} className="px-6 py-10 text-center text-primary/50 text-sm">Loading assignments...</td>
+                            </tr>
+                          ) : visibleAdminAssignments.length === 0 ? (
+                            <tr>
+                              <td colSpan={8} className="px-6 py-10 text-center text-primary/50 text-sm">No assignments found.</td>
+                            </tr>
+                          ) : (
+                            visibleAdminAssignments.map((a) => (
+                              <tr key={a.id} className="hover:bg-primary-light/10">
+                                <td className="px-6 py-4 text-sm font-semibold text-black">{a.faculty_name}</td>
+                                <td className="px-6 py-4 text-sm text-primary/60">{a.faculty_id}</td>
+                                <td className="px-6 py-4 text-sm text-primary/60">{a.department}</td>
+                                <td className="px-6 py-4 text-sm text-black/80">{a.subject_name}</td>
+                                <td className="px-6 py-4 text-sm text-primary/60">{a.subject_code}</td>
+                                <td className="px-6 py-4 text-sm text-primary/60">{a.regulation}</td>
+                                <td className="px-6 py-4 text-sm text-primary/60">{a.year}</td>
+                                <td className="px-6 py-4 text-sm text-primary/60">{a.semester}</td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {view === 'admin-data' && user?.role === 'ADMIN' && (
+            <motion.div
+              key="admin-data"
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+              className="space-y-6"
+            >
+              <div className="flex items-center justify-between gap-4">
+                <Button variant="ghost" onClick={() => setView('dashboard')}>
+                  <ChevronLeft size={18} />
+                  Back to Dashboard
+                </Button>
+                <h2 className="text-2xl font-bold text-black">Admin Data Viewer</h2>
+                <Button variant="secondary" onClick={() => fetchAdminData(adminDataTable)} disabled={adminDataLoading}>
+                  {adminDataLoading ? 'Loading...' : 'Refresh'}
+                </Button>
+              </div>
+
+              {adminDataError && (
+                <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2 border border-red-100">
+                  <AlertCircle size={16} />
+                  {adminDataError}
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { key: 'users', label: 'Users' },
+                  { key: 'students', label: 'Students' },
+                  { key: 'question_papers', label: 'Question Papers' },
+                  { key: 'evaluations', label: 'Evaluations' },
+                  { key: 'student_marks', label: 'Student Marks' },
+                ].map((t) => (
+                  <Button
+                    key={t.key}
+                    variant={adminDataTable === (t.key as any) ? 'primary' : 'secondary'}
+                    onClick={() => setAdminDataTable(t.key as any)}
+                  >
+                    {t.label}
+                  </Button>
+                ))}
+              </div>
+
+              <div className="bg-white rounded-2xl border border-primary/10 shadow-sm overflow-hidden">
+                <div className="px-6 py-4 border-b border-primary/10 bg-primary-light/20 flex items-center justify-between">
+                  <div className="font-bold text-black">Table: {adminDataTable}</div>
+                  <div className="text-sm text-primary/60">{adminDataRows.length} rows</div>
+                </div>
+
+                {(() => {
+                  const cols = adminDataRows.length ? Object.keys(adminDataRows[0] || {}) : [];
+                  return (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left">
+                        <thead>
+                          <tr className="bg-primary-light/10 text-primary/60 text-xs uppercase tracking-wider font-semibold">
+                            {cols.length === 0 ? (
+                              <th className="px-6 py-4">No Data</th>
+                            ) : (
+                              cols.map((c) => (
+                                <th key={c} className="px-4 py-3 whitespace-nowrap">{c}</th>
+                              ))
+                            )}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-primary/5">
+                          {adminDataLoading && adminDataRows.length === 0 ? (
+                            <tr>
+                              <td colSpan={Math.max(cols.length, 1)} className="px-6 py-10 text-center text-primary/50 text-sm">Loading...</td>
+                            </tr>
+                          ) : adminDataRows.length === 0 ? (
+                            <tr>
+                              <td colSpan={Math.max(cols.length, 1)} className="px-6 py-10 text-center text-primary/50 text-sm">No rows.</td>
+                            </tr>
+                          ) : (
+                            adminDataRows.map((r, idx) => (
+                              <tr key={r.id || idx} className="hover:bg-primary-light/10">
+                                {cols.map((c) => {
+                                  const v = (r as any)[c];
+                                  const text = v === null || v === undefined ? '' : (typeof v === 'object' ? JSON.stringify(v) : String(v));
+                                  return <td key={c} className="px-4 py-3 text-sm text-black/80 whitespace-nowrap max-w-[360px] truncate" title={text}>{text}</td>;
+                                })}
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  );
+                })()}
+              </div>
             </motion.div>
           )}
 
@@ -2226,12 +3781,12 @@ export default function App() {
               className="max-w-3xl mx-auto space-y-6"
             >
               <div className="flex items-center justify-between">
-                <Button variant="ghost" onClick={() => setView('admin-users')}>
+                <Button variant="ghost" onClick={() => setView('admin-view-users')}>
                   <ChevronLeft size={18} />
                   Back
                 </Button>
                 <div className="flex gap-2">
-                  <Button variant="secondary" onClick={() => setView('admin-users')}>Cancel</Button>
+                  <Button variant="secondary" onClick={() => setView('admin-view-users')}>Cancel</Button>
                   <Button onClick={handleAdminSaveUser}>
                     <Save size={18} />
                     Save
@@ -2247,7 +3802,7 @@ export default function App() {
               )}
 
               <div className="bg-white p-8 rounded-2xl border border-primary/10 shadow-sm space-y-6">
-                <h2 className="text-2xl font-bold text-black">Edit Faculty Account</h2>
+                <h2 className="text-2xl font-bold text-black">Edit Account</h2>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <Input
                     label="Name"
@@ -2266,12 +3821,14 @@ export default function App() {
                     options={[
                       { label: 'Faculty', value: 'FACULTY' },
                       { label: 'HOD', value: 'HOD' },
+                      { label: 'Exam Branch', value: 'EXAM_BRANCH' },
                     ]}
                   />
                   <Select
                     label="Department"
                     value={adminEditForm.department}
                     onChange={(e: any) => setAdminEditForm(prev => ({ ...prev, department: e.target.value }))}
+                    disabled={adminEditForm.role === 'EXAM_BRANCH'}
                     options={[
                       { label: 'CSE', value: 'CSE' },
                       { label: 'CSD', value: 'CSD' },
@@ -2306,7 +3863,7 @@ export default function App() {
               className="max-w-xl mx-auto space-y-6"
             >
               <div className="flex items-center justify-between">
-                <Button variant="ghost" onClick={() => setView('admin-users')}>
+                <Button variant="ghost" onClick={() => setView('admin-view-users')}>
                   <ChevronLeft size={18} />
                   Back
                 </Button>
@@ -2329,15 +3886,45 @@ export default function App() {
                   Reset password for <span className="font-semibold text-black">{adminSelectedUser.name}</span> ({adminSelectedUser.faculty_id})
                 </div>
                 <div className="space-y-4">
-                  <Input
-                    label="New Password"
-                    type="password"
-                    value={adminResetForm.new_password}
-                    onChange={(e: any) => setAdminResetForm(prev => ({ ...prev, new_password: e.target.value }))}
-                  />
+                  <div className="space-y-1 w-full">
+                    <label className="text-sm font-medium text-black">New Password</label>
+                    <div className="flex gap-2">
+                      <input
+                        value={adminResetForm.new_password}
+                        onChange={(e: any) => setAdminResetForm((p) => ({ ...p, new_password: e.target.value }))}
+                        type={adminShowResetPassword ? 'text' : 'password'}
+                        className="w-full px-3 py-2 border border-primary/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
+                      />
+                      <Button
+                        variant="secondary"
+                        className="px-3"
+                        onClick={() => setAdminResetForm((p) => ({ ...p, new_password: generatePassword(12) }))}
+                        title="Generate password"
+                      >
+                        <RefreshCw size={16} />
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        className="px-3"
+                        onClick={() => copyToClipboard(adminResetForm.new_password || '')}
+                        disabled={!adminResetForm.new_password}
+                        title="Copy password"
+                      >
+                        <Copy size={16} />
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        className="px-3"
+                        onClick={() => setAdminShowResetPassword((v) => !v)}
+                        title={adminShowResetPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {adminShowResetPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                      </Button>
+                    </div>
+                  </div>
                   <Input
                     label="Confirm Password"
-                    type="password"
+                    type={adminShowResetPassword ? 'text' : 'password'}
                     value={adminResetForm.confirm_password}
                     onChange={(e: any) => setAdminResetForm(prev => ({ ...prev, confirm_password: e.target.value }))}
                   />
@@ -2385,7 +3972,7 @@ export default function App() {
               {user.role === 'HOD' && (
                 <div className="bg-white p-8 rounded-2xl border border-primary/10 shadow-sm space-y-6">
                   <h3 className="text-lg font-bold text-black">HOD: Upload Student List</h3>
-                  <div className={`grid grid-cols-1 gap-4 ${user.department === 'H&S' ? 'md:grid-cols-4' : 'md:grid-cols-3'}`}>
+                  <div className={`grid grid-cols-1 gap-4 ${user.department === 'H&S' ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
                     <Select
                       label="Regulation"
                       value={evalUploadFilters.regulation}
@@ -2428,11 +4015,18 @@ export default function App() {
                         ]}
                       />
                     )}
-                    <Input
+                    <Select
                       label="Section"
-                      placeholder="A / B / C"
                       value={evalUploadFilters.section}
-                      onChange={(e: any) => setEvalUploadFilters((p) => ({ ...p, section: e.target.value.toUpperCase() }))}
+                      onChange={(e: any) => setEvalUploadFilters((p) => ({ ...p, section: e.target.value }))}
+                      options={[
+                        { value: 'A', label: 'A' },
+                        { value: 'B', label: 'B' },
+                        { value: 'C', label: 'C' },
+                        { value: 'D', label: 'D' },
+                        { value: 'E', label: 'E' },
+                        { value: 'F', label: 'F' },
+                      ]}
                     />
                   </div>
 
@@ -2457,15 +4051,95 @@ export default function App() {
                 </div>
               )}
 
+              {/* HOD Review Evaluations */}
+              {user.role === 'HOD' && (
+                <div className="bg-white rounded-2xl border border-primary/10 shadow-sm overflow-hidden">
+                  <div className="px-6 py-4 border-b border-primary/10 bg-primary-light/30 flex items-center justify-between">
+                    <div className="font-bold text-primary flex items-center gap-2">
+                      <FileCheck size={18} />
+                      Submitted Evaluations
+                    </div>
+                    <Button variant="secondary" onClick={loadHodSubmissions} disabled={evalLoading}>
+                      {evalLoading ? 'Loading...' : 'Refresh'}
+                    </Button>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                      <thead>
+                        <tr className="bg-primary-light/10 text-primary/60 text-xs uppercase tracking-wider font-semibold">
+                          <th className="px-6 py-4">Faculty</th>
+                          <th className="px-6 py-4">Subject</th>
+                          <th className="px-6 py-4">Reg/Year/Sec</th>
+                          <th className="px-6 py-4">Mid</th>
+                          <th className="px-6 py-4">Submission Date</th>
+                          <th className="px-6 py-4 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-primary/5">
+                        {evalSubmissions.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} className="px-6 py-8 text-center text-primary/40 text-sm italic">
+                              No submitted evaluations yet.
+                            </td>
+                          </tr>
+                        ) : (
+                          evalSubmissions.map((s) => (
+                            <tr key={s.id} className="hover:bg-primary-light/10">
+                              <td className="px-6 py-4 text-sm font-semibold text-black">{s.faculty_name || s.faculty_id}</td>
+                              <td className="px-6 py-4 text-sm text-black/80">
+                                {s.subject_name} <span className="text-primary/50">({s.subject_code})</span>
+                              </td>
+                              <td className="px-6 py-4 text-sm text-black/80">
+                                {s.regulation} â€¢ {s.year} â€¢ {s.branch ? `Branch ${s.branch} â€¢ ` : ''}Sec {s.section}
+                              </td>
+                              <td className="px-6 py-4 text-sm text-black/80">{s.mid_type}</td>
+                              <td className="px-6 py-4 text-sm text-black/60">{s.submitted_at ? new Date(s.submitted_at).toLocaleString() : '-'}</td>
+                              <td className="px-6 py-4 text-right">
+                                <Button
+                                  variant="secondary"
+                                  onClick={async () => {
+                                    const nextFilters = {
+                                      ...evalFilters,
+                                      regulation: s.regulation,
+                                      year: s.year,
+                                      section: s.section,
+                                      branch: s.branch || evalFilters.branch,
+                                      mid_type: s.mid_type,
+                                      subject_name: s.subject_name,
+                                      subject_code: s.subject_code,
+                                    };
+                                    setEvalFilters(nextFilters);
+                                    await loadEvaluationStudentList({ activeFacultyId: s.faculty_id, filters: nextFilters });
+                                    setEvalSubmitted(true);
+                                  }}
+                                >
+                                  View / Edit
+                                </Button>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
               {/* Faculty Marks Entry */}
               {user.role === 'FACULTY' && (
                 <div className="bg-white p-8 rounded-2xl border border-primary/10 shadow-sm space-y-6">
                   <h3 className="text-lg font-bold text-black">Faculty: Select Filters</h3>
-                  <div className={`grid grid-cols-1 gap-4 ${user.department === 'H&S' ? 'md:grid-cols-4' : 'md:grid-cols-3'}`}>
+                  {evalSubjectsError && (
+                    <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2 border border-red-100">
+                      <AlertCircle size={16} />
+                      {evalSubjectsError}
+                    </div>
+                  )}
+                  <div className={`grid grid-cols-1 gap-4 ${user.department === 'H&S' ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
                     <Select
                       label="Regulation"
                       value={evalFilters.regulation}
-                      onChange={(e: any) => setEvalFilters((p) => ({ ...p, regulation: e.target.value }))}
+                      onChange={(e: any) => setEvalFilters((p) => ({ ...p, regulation: e.target.value, subject_name: '', subject_code: '' }))}
                       options={[
                         { value: 'R22', label: 'R22' },
                         { value: 'R25', label: 'R25' },
@@ -2478,7 +4152,7 @@ export default function App() {
                       <Select
                         label="Year"
                         value={evalFilters.year}
-                        onChange={(e: any) => setEvalFilters((p) => ({ ...p, year: e.target.value }))}
+                        onChange={(e: any) => setEvalFilters((p) => ({ ...p, year: e.target.value, subject_name: '', subject_code: '' }))}
                         options={[
                           { value: 'II', label: 'II' },
                           { value: 'III', label: 'III' },
@@ -2487,11 +4161,21 @@ export default function App() {
                       />
                     )}
 
+                    <Select
+                      label="Semester"
+                      value={evalFilters.semester}
+                      onChange={(e: any) => setEvalFilters((p) => ({ ...p, semester: e.target.value, subject_name: '', subject_code: '' }))}
+                      options={[
+                        { value: 'I', label: 'Semester I' },
+                        { value: 'II', label: 'Semester II' },
+                      ]}
+                    />
+
                     {user.department === 'H&S' && (
                       <Select
                         label="Branch"
                         value={evalFilters.branch}
-                        onChange={(e: any) => setEvalFilters((p) => ({ ...p, branch: e.target.value }))}
+                        onChange={(e: any) => setEvalFilters((p) => ({ ...p, branch: e.target.value, subject_name: '', subject_code: '' }))}
                         options={[
                           { value: 'CSE', label: 'CSE' },
                           { value: 'CSM', label: 'CSM' },
@@ -2504,11 +4188,18 @@ export default function App() {
                         ]}
                       />
                     )}
-                    <Input
+                    <Select
                       label="Section"
-                      placeholder="A / B / C"
                       value={evalFilters.section}
-                      onChange={(e: any) => setEvalFilters((p) => ({ ...p, section: e.target.value.toUpperCase() }))}
+                      onChange={(e: any) => setEvalFilters((p) => ({ ...p, section: e.target.value }))}
+                      options={[
+                        { value: 'A', label: 'A' },
+                        { value: 'B', label: 'B' },
+                        { value: 'C', label: 'C' },
+                        { value: 'D', label: 'D' },
+                        { value: 'E', label: 'E' },
+                        { value: 'F', label: 'F' },
+                      ]}
                     />
                     <Select
                       label="Mid Type"
@@ -2519,17 +4210,42 @@ export default function App() {
                         { value: 'Mid II', label: 'Mid 2' },
                       ]}
                     />
-                    <Input
-                      label="Subject Name"
-                      placeholder="Subject Name"
+                    <Select
+                      label="Subject"
                       value={evalFilters.subject_name}
-                      onChange={(e: any) => setEvalFilters((p) => ({ ...p, subject_name: e.target.value }))}
+                      disabled={
+                        !evalFilters.regulation ||
+                        !evalFilters.year ||
+                        !evalFilters.semester ||
+                        (user.department === 'H&S' && !evalFilters.branch)
+                      }
+                      onChange={(e: any) => {
+                        const name = e.target.value;
+                        const selected = evalSubjects.find((s) => s.subject_name === name);
+                        setEvalFilters((p) => ({
+                          ...p,
+                          subject_name: name,
+                          subject_code: selected ? selected.subject_code : '',
+                        }));
+                      }}
+                      options={[
+                        {
+                          value: '',
+                          label: evalSubjectsLoading
+                            ? 'Loading subjects...'
+                            : evalSubjects.length
+                              ? 'Select Subject'
+                              : 'No subjects available',
+                        },
+                        ...evalSubjects.map((s) => ({ value: s.subject_name, label: s.subject_name })),
+                      ]}
                     />
                     <Input
                       label="Subject Code"
-                      placeholder="Subject Code"
+                      placeholder="Auto-filled"
                       value={evalFilters.subject_code}
-                      onChange={(e: any) => setEvalFilters((p) => ({ ...p, subject_code: e.target.value.toUpperCase() }))}
+                      readOnly
+                      className="bg-gray-50 cursor-not-allowed"
                     />
                   </div>
                   <div className="flex justify-end">
@@ -2540,7 +4256,7 @@ export default function App() {
                 </div>
               )}
 
-              {user.role === 'FACULTY' && evalList && (
+              {(user.role === 'FACULTY' || user.role === 'HOD') && evalList && (
                 <div className="bg-white rounded-2xl border border-primary/10 shadow-sm overflow-hidden">
                   <div className="px-6 py-4 border-b border-primary/10 bg-primary-light/30 flex items-center justify-between">
                     <div className="font-bold text-primary flex items-center gap-2">
@@ -2548,12 +4264,33 @@ export default function App() {
                       Student List: {evalList.regulation} • {evalList.year} • {evalList.branch ? `Branch ${evalList.branch} • ` : ''}Sec {evalList.section}
                     </div>
                     <div className="flex gap-2">
-                      <Button variant="secondary" disabled={evalStep === 'descriptive'} onClick={() => setEvalStep('descriptive')}>Descriptive</Button>
-                      <Button variant="secondary" disabled={evalStep === 'objective'} onClick={() => setEvalStep('objective')}>Objective</Button>
                       <Button onClick={saveEvaluationMarks} disabled={evalLoading}>
                         <Save size={18} />
                         Save Marks
                       </Button>
+                      {evalStep === 'descriptive' ? (
+                        <Button variant="secondary" onClick={() => setEvalStep('objective')}>Next: Objective</Button>
+                      ) : (
+                        <Button variant="secondary" onClick={() => setEvalStep('descriptive')}>Back: Descriptive</Button>
+                      )}
+                      {user.role === 'FACULTY' && (
+                        <Button variant="success" onClick={submitEvaluation} disabled={evalLoading}>
+                          <Send size={18} />
+                          Submit
+                        </Button>
+                      )}
+                      {(evalSubmitted || user.role === 'HOD') && (
+                        <>
+                          <Button variant="secondary" onClick={downloadEvaluationExcel}>
+                            <Download size={18} />
+                            Excel
+                          </Button>
+                          <Button variant="secondary" onClick={downloadEvaluationPdf}>
+                            <Printer size={18} />
+                            PDF
+                          </Button>
+                        </>
+                      )}
                     </div>
                   </div>
 
@@ -2567,26 +4304,33 @@ export default function App() {
                             {Array.from({ length: 6 }, (_, i) => (
                               <th key={i} className="px-4 py-3 text-center">{`Q${i + 1}`} <span className="normal-case text-[10px] text-primary/40">({evalCoLabels[i] || `CO${i + 1}`})</span></th>
                             ))}
+                            <th className="px-4 py-3 text-center">Total</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-primary/5">
-                          {evalList.students.map((s) => (
-                            <tr key={s.roll_number} className="hover:bg-primary-light/10">
-                              <td className="px-4 py-3 text-sm font-medium text-black">{s.roll_number}</td>
-                              <td className="px-4 py-3 text-sm text-black/80">{s.student_name}</td>
-                              {Array.from({ length: 6 }, (_, i) => (
-                                <td key={i} className="px-2 py-2">
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    className="w-20 px-2 py-1 border border-primary/10 rounded-lg text-sm text-center"
-                                    value={(evalMarks[s.roll_number]?.descriptive?.[i] ?? '') as any}
-                                    onChange={(e) => updateEvalMark(s.roll_number, 'descriptive', i, e.target.value)}
-                                  />
-                                </td>
-                              ))}
-                            </tr>
-                          ))}
+                          {evalStudentsSorted.map((s) => {
+                            const m = evalMarks[s.roll_number] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
+                            const total = sumMarks([...m.descriptive, ...m.mcq, ...m.fb]);
+
+                            return (
+                              <tr key={s.roll_number} className="hover:bg-primary-light/10">
+                                <td className="px-4 py-3 text-sm font-medium text-black">{s.roll_number}</td>
+                                <td className="px-4 py-3 text-sm text-black/80">{s.student_name}</td>
+                                {Array.from({ length: 6 }, (_, i) => (
+                                  <td key={i} className="px-2 py-2">
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      className="w-20 px-2 py-1 border border-primary/10 rounded-lg text-sm text-center"
+                                      value={(m.descriptive?.[i] ?? '') as any}
+                                      onChange={(e) => updateEvalMark(s.roll_number, 'descriptive', i, e.target.value)}
+                                    />
+                                  </td>
+                                ))}
+                                <td className="px-4 py-3 text-sm font-bold text-center text-black">{total}</td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -2602,28 +4346,35 @@ export default function App() {
                               <th className="px-4 py-3">Roll No</th>
                               <th className="px-4 py-3">Student Name</th>
                               {Array.from({ length: 10 }, (_, i) => (
-                                <th key={i} className="px-4 py-3 text-center">{`MCQ${i + 1}`}</th>
+                                <th key={i} className="px-4 py-3 text-center">{`I${i + 1}`} <span className="normal-case text-[10px] text-primary/40">({evalObjCoLabelsMcq[i] || evalObjCoFallback[i]})</span></th>
                               ))}
-                            </tr>
+                              <th className="px-4 py-3 text-center">Total</th>
+                          </tr>
                           </thead>
                           <tbody className="divide-y divide-primary/5">
-                            {evalList.students.map((s) => (
-                              <tr key={s.roll_number} className="hover:bg-primary-light/10">
-                                <td className="px-4 py-3 text-sm font-medium text-black">{s.roll_number}</td>
-                                <td className="px-4 py-3 text-sm text-black/80">{s.student_name}</td>
-                                {Array.from({ length: 10 }, (_, i) => (
-                                  <td key={i} className="px-2 py-2">
-                                    <input
-                                      type="number"
-                                      min={0}
-                                      className="w-20 px-2 py-1 border border-primary/10 rounded-lg text-sm text-center"
-                                      value={(evalMarks[s.roll_number]?.mcq?.[i] ?? '') as any}
-                                      onChange={(e) => updateEvalMark(s.roll_number, 'mcq', i, e.target.value)}
-                                    />
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
+                            {evalStudentsSorted.map((s) => {
+                              const m = evalMarks[s.roll_number] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
+                              const total = sumMarks([...m.descriptive, ...m.mcq, ...m.fb]);
+
+                              return (
+                                <tr key={s.roll_number} className="hover:bg-primary-light/10">
+                                  <td className="px-4 py-3 text-sm font-medium text-black">{s.roll_number}</td>
+                                  <td className="px-4 py-3 text-sm text-black/80">{s.student_name}</td>
+                                  {Array.from({ length: 10 }, (_, i) => (
+                                    <td key={i} className="px-2 py-2">
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        className="w-20 px-2 py-1 border border-primary/10 rounded-lg text-sm text-center"
+                                        value={(m.mcq?.[i] ?? '') as any}
+                                        onChange={(e) => updateEvalMark(s.roll_number, 'mcq', i, e.target.value)}
+                                      />
+                                    </td>
+                                  ))}
+                                  <td className="px-4 py-3 text-sm font-bold text-center text-black">{total}</td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -2636,28 +4387,35 @@ export default function App() {
                               <th className="px-4 py-3">Roll No</th>
                               <th className="px-4 py-3">Student Name</th>
                               {Array.from({ length: 10 }, (_, i) => (
-                                <th key={i} className="px-4 py-3 text-center">{`FB${i + 1}`}</th>
+                                <th key={i} className="px-4 py-3 text-center">{`II${i + 1}`} <span className="normal-case text-[10px] text-primary/40">({evalObjCoLabelsFb[i] || evalObjCoFallback[i]})</span></th>
                               ))}
-                            </tr>
+                              <th className="px-4 py-3 text-center">Total</th>
+                          </tr>
                           </thead>
                           <tbody className="divide-y divide-primary/5">
-                            {evalList.students.map((s) => (
-                              <tr key={s.roll_number} className="hover:bg-primary-light/10">
-                                <td className="px-4 py-3 text-sm font-medium text-black">{s.roll_number}</td>
-                                <td className="px-4 py-3 text-sm text-black/80">{s.student_name}</td>
-                                {Array.from({ length: 10 }, (_, i) => (
-                                  <td key={i} className="px-2 py-2">
-                                    <input
-                                      type="number"
-                                      min={0}
-                                      className="w-20 px-2 py-1 border border-primary/10 rounded-lg text-sm text-center"
-                                      value={(evalMarks[s.roll_number]?.fb?.[i] ?? '') as any}
-                                      onChange={(e) => updateEvalMark(s.roll_number, 'fb', i, e.target.value)}
-                                    />
-                                  </td>
-                                ))}
-                              </tr>
-                            ))}
+                            {evalStudentsSorted.map((s) => {
+                              const m = evalMarks[s.roll_number] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
+                              const total = sumMarks([...m.descriptive, ...m.mcq, ...m.fb]);
+
+                              return (
+                                <tr key={s.roll_number} className="hover:bg-primary-light/10">
+                                  <td className="px-4 py-3 text-sm font-medium text-black">{s.roll_number}</td>
+                                  <td className="px-4 py-3 text-sm text-black/80">{s.student_name}</td>
+                                  {Array.from({ length: 10 }, (_, i) => (
+                                    <td key={i} className="px-2 py-2">
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        className="w-20 px-2 py-1 border border-primary/10 rounded-lg text-sm text-center"
+                                        value={(m.fb?.[i] ?? '') as any}
+                                        onChange={(e) => updateEvalMark(s.roll_number, 'fb', i, e.target.value)}
+                                      />
+                                    </td>
+                                  ))}
+                                  <td className="px-4 py-3 text-sm font-bold text-center text-black">{total}</td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
@@ -2671,6 +4429,7 @@ export default function App() {
           {view === 'create-paper' && (
             <QuestionPaperForm
               user={user!}
+              assignedSubjects={assignedSubjects}
               onCancel={() => setView('dashboard')}
               onSuccess={() => {
                 fetchPapers();
@@ -2683,6 +4442,7 @@ export default function App() {
             <QuestionPaperForm
               user={user!}
               paper={selectedPaper}
+              assignedSubjects={assignedSubjects}
               onCancel={() => setView('dashboard')}
               onSuccess={() => {
                 fetchPapers();

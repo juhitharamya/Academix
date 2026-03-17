@@ -1,40 +1,53 @@
 import express from "express";
-import type { Db } from "../db.ts";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { mapRoleDbToApi } from "./supabaseUtils.ts";
 
-export function createUsersRouter(db: Db) {
+export function createUsersRouter(supabase: SupabaseClient) {
   const router = express.Router();
 
-  router.patch("/api/users/:id", (req, res) => {
-    const id = req.params.id;
+  router.patch("/api/users/:id", async (req, res) => {
+    const id = String(req.params.id || "").trim();
     const { name, email } = req.body as any;
 
-    const existing = db.prepare("SELECT * FROM faculty WHERE faculty_id = ?").get(id) as any;
+    const { data: existing, error: findErr } = await supabase
+      .from("users")
+      .select("faculty_id,name,department,role,email,status")
+      .eq("faculty_id", id)
+      .maybeSingle();
+
+    if (findErr) return res.status(500).json({ error: findErr.message });
     if (!existing) return res.status(404).json({ error: "User not found" });
 
-    try {
-      const nextName = (name ?? existing.name) as string;
-      if (!String(nextName).trim()) return res.status(400).json({ error: "Name is required" });
+    const nextName = String(name ?? existing.name ?? "").trim();
+    if (!nextName) return res.status(400).json({ error: "Name is required" });
 
-      const stmt = db.prepare("UPDATE faculty SET name = ?, email = ? WHERE faculty_id = ?");
-      stmt.run(nextName.trim(), (email ?? "").trim() || null, id);
+    const { error: updErr } = await supabase
+      .from("users")
+      .update({ name: nextName, email: String(email ?? "").trim() || null })
+      .eq("faculty_id", id);
 
-      const updated = db.prepare("SELECT faculty_id, name, department, role, email, status FROM faculty WHERE faculty_id = ?").get(id) as any;
-      res.json({
-        success: true,
-        user: {
-          faculty_id: updated.faculty_id,
-          name: updated.name,
-          department: updated.department || "",
-          role: updated.role,
-          email: updated.email || "",
-          status: updated.status || "Active",
-        },
-      });
-    } catch (error: any) {
-      res.status(400).json({ error: error.message });
-    }
+    if (updErr) return res.status(400).json({ error: updErr.message });
+
+    const { data: updated, error: readErr } = await supabase
+      .from("users")
+      .select("faculty_id,name,department,role,email,status")
+      .eq("faculty_id", id)
+      .maybeSingle();
+
+    if (readErr) return res.status(500).json({ error: readErr.message });
+
+    res.json({
+      success: true,
+      user: {
+        faculty_id: updated?.faculty_id || id,
+        name: updated?.name || nextName,
+        department: updated?.department || "",
+        role: mapRoleDbToApi(String(updated?.role || existing.role || "")),
+        email: updated?.email || "",
+        status: updated?.status || existing.status || "Active",
+      },
+    });
   });
 
   return router;
 }
-

@@ -206,6 +206,25 @@ export function openDb(dbFile?: string) {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(department, branch, regulation, year, section, mid_type, subject_code, roll_number)
     );
+
+    CREATE TABLE IF NOT EXISTS evaluation_submissions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      faculty_id TEXT NOT NULL,
+      faculty_name TEXT,
+      department TEXT NOT NULL,
+      branch TEXT NOT NULL DEFAULT '',
+      regulation TEXT NOT NULL,
+      year TEXT NOT NULL,
+      section TEXT NOT NULL,
+      mid_type TEXT NOT NULL,
+      subject_name TEXT NOT NULL,
+      subject_code TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'Draft',
+      submitted_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(department, branch, regulation, year, section, mid_type, subject_code)
+    );
   `);
 
   migrateEvaluationTables();

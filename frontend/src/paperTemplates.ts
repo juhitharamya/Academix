@@ -1,5 +1,6 @@
 import type { FillBlank, ObjectiveMCQ, QuestionPaper, SubjectiveQuestion } from './types';
 import { COLLEGE_LOGO_DATA_URI } from './collegeLogo';
+import { COLLEGE_LOGO_URL } from './collegeLogoUrl';
 
 export type PaperSetType = 'Set 1' | 'Set 2';
 export type PaperTemplateType = 'official' | 'descriptive' | 'bit';
@@ -166,7 +167,7 @@ export function buildOfficialPaperHtml(paper: QuestionPaper, setType: PaperSetTy
   </head>
   <body>
     <div class="top">
-      <img class="logoImg" src="${COLLEGE_LOGO_DATA_URI}" alt="College Logo" />
+      <img class="logoImg" src="${COLLEGE_LOGO_URL}" onerror="this.onerror=null;this.src='${COLLEGE_LOGO_DATA_URI}'" alt="College Logo" />
       <div class="hgroup">
         <div class="college">${escapeHtml(collegeName)}</div>
         <div class="exam">${escapeHtml(title)}</div>
@@ -213,7 +214,7 @@ export function buildOfficialPaperHtml(paper: QuestionPaper, setType: PaperSetTy
         </tr>
       </thead>
       <tbody>
-        ${Array.from({length: 5}, (_, i) => mcqs[i] ?? null).map((q, idx) => {
+        ${Array.from({length: 10}, (_, i) => mcqs[i] ?? null).map((q, idx) => {
           const qNo = `${idx + 1}.`;
           if (!q) {
             return `<tr>
@@ -333,7 +334,7 @@ export function buildDescriptivePaperHtml(paper: QuestionPaper, setType: PaperSe
   </head>
   <body>
     <div class="top">
-      <img class="logoImg" src="${COLLEGE_LOGO_DATA_URI}" alt="College Logo" />
+      <img class="logoImg" src="${COLLEGE_LOGO_URL}" onerror="this.onerror=null;this.src='${COLLEGE_LOGO_DATA_URI}'" alt="College Logo" />
       <div class="hgroup">
         <div class="college">${escapeHtml(collegeName)}</div>
         <div class="exam">${escapeHtml(title)} • SET-${escapeHtml(setNo)}</div>
@@ -394,8 +395,9 @@ export function buildDescriptivePaperHtml(paper: QuestionPaper, setType: PaperSe
 }
 
 export function buildBitPaperHtml(paper: QuestionPaper, setType: PaperSetType) {
-  // For now, reuse descriptive template; this can be upgraded to the full BIT layout later.
-  return buildDescriptivePaperHtml(paper, setType);
+  // Objective (BIT) template: MCQs + Fill in the blanks (10 marks).
+  // Reuse the existing objective layout used by the official template generator.
+  return buildOfficialPaperHtml(paper, setType);
 }
 
 export function downloadHtmlFile(filename: string, html: string) {
@@ -409,4 +411,3 @@ export function downloadHtmlFile(filename: string, html: string) {
   a.remove();
   URL.revokeObjectURL(url);
 }
-
