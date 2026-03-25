@@ -73,4 +73,3 @@ if (error) {
 }
 
 console.log(`Imported ${valid.length} subjects from ${file}`);
-

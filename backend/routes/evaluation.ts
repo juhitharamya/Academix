@@ -26,6 +26,36 @@ function sumNums(values: any[]) {
   return values.reduce((sum, v) => sum + (Number.isFinite(Number(v)) ? Number(v) : 0), 0);
 }
 
+function normalizeDescriptiveMark(value: any) {
+  if (!Number.isFinite(Number(value))) return null;
+  const parsed = Number(value);
+  return parsed >= 0 && parsed <= 5 ? parsed : null;
+}
+
+function normalizeObjectiveMark(value: any) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  return parsed > 0 ? 0.5 : 0;
+}
+
+function bestFourDescriptiveTotal(values: any[]) {
+  return (values || [])
+    .map((v) => normalizeDescriptiveMark(v))
+    .filter((v): v is number => v !== null)
+    .sort((a, b) => b - a)
+    .slice(0, 4)
+    .reduce((sum, v) => sum + v, 0);
+}
+
+function objectiveSectionTotal(values: any[]) {
+  return (values || []).reduce((sum, value) => sum + (normalizeObjectiveMark(value) ?? 0), 0);
+}
+
+function evaluationTotal(descriptive: any[], mcq: any[], fb: any[]) {
+  return bestFourDescriptiveTotal(descriptive) + objectiveSectionTotal(mcq || []) + objectiveSectionTotal(fb || []);
+}
+
 export function createEvaluationRouter(supabase: SupabaseClient) {
   const router = express.Router();
 
@@ -273,38 +303,38 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
         const m = Array.isArray(e.mcq_marks) ? e.mcq_marks : [];
         const f = Array.isArray(e.fb_marks) ? e.fb_marks : [];
 
-        const total = sumNums([...d, ...m, ...f]);
+        const total = evaluationTotal(d, m, f);
 
         rows.push({
           evaluation_id: evaluationId,
           roll_number,
           student_name,
-          q1: toNumOrNull(d[0]),
-          q2: toNumOrNull(d[1]),
-          q3: toNumOrNull(d[2]),
-          q4: toNumOrNull(d[3]),
-          q5: toNumOrNull(d[4]),
-          q6: toNumOrNull(d[5]),
-          mcq1: toNumOrNull(m[0]),
-          mcq2: toNumOrNull(m[1]),
-          mcq3: toNumOrNull(m[2]),
-          mcq4: toNumOrNull(m[3]),
-          mcq5: toNumOrNull(m[4]),
-          mcq6: toNumOrNull(m[5]),
-          mcq7: toNumOrNull(m[6]),
-          mcq8: toNumOrNull(m[7]),
-          mcq9: toNumOrNull(m[8]),
-          mcq10: toNumOrNull(m[9]),
-          fb1: toNumOrNull(f[0]),
-          fb2: toNumOrNull(f[1]),
-          fb3: toNumOrNull(f[2]),
-          fb4: toNumOrNull(f[3]),
-          fb5: toNumOrNull(f[4]),
-          fb6: toNumOrNull(f[5]),
-          fb7: toNumOrNull(f[6]),
-          fb8: toNumOrNull(f[7]),
-          fb9: toNumOrNull(f[8]),
-          fb10: toNumOrNull(f[9]),
+          q1: normalizeDescriptiveMark(d[0]),
+          q2: normalizeDescriptiveMark(d[1]),
+          q3: normalizeDescriptiveMark(d[2]),
+          q4: normalizeDescriptiveMark(d[3]),
+          q5: normalizeDescriptiveMark(d[4]),
+          q6: normalizeDescriptiveMark(d[5]),
+          mcq1: normalizeObjectiveMark(m[0]),
+          mcq2: normalizeObjectiveMark(m[1]),
+          mcq3: normalizeObjectiveMark(m[2]),
+          mcq4: normalizeObjectiveMark(m[3]),
+          mcq5: normalizeObjectiveMark(m[4]),
+          mcq6: normalizeObjectiveMark(m[5]),
+          mcq7: normalizeObjectiveMark(m[6]),
+          mcq8: normalizeObjectiveMark(m[7]),
+          mcq9: normalizeObjectiveMark(m[8]),
+          mcq10: normalizeObjectiveMark(m[9]),
+          fb1: normalizeObjectiveMark(f[0]),
+          fb2: normalizeObjectiveMark(f[1]),
+          fb3: normalizeObjectiveMark(f[2]),
+          fb4: normalizeObjectiveMark(f[3]),
+          fb5: normalizeObjectiveMark(f[4]),
+          fb6: normalizeObjectiveMark(f[5]),
+          fb7: normalizeObjectiveMark(f[6]),
+          fb8: normalizeObjectiveMark(f[7]),
+          fb9: normalizeObjectiveMark(f[8]),
+          fb10: normalizeObjectiveMark(f[9]),
           total_marks: total,
           updated_at: now,
         });

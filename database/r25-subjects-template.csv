@@ -1,0 +1,13 @@
+regulation,department,branch,year,semester,subject_name,subject_code
+# Fill this file with your R25 subjects and import using:
+#   npm.cmd run import:subjects -- database/r25-subjects-template.csv
+#
+# Notes:
+# - For 1st year (Year I), use department=H&S and set branch to the target branch (CSE/CSM/CSD/ECE, etc).
+# - For other years, use the owning department (example: CSM) and branch can be empty.
+#
+# Example rows (replace with your official syllabus):
+# R25,H&S,CSM,I,I,Communicative English,EN101
+# R25,H&S,CSM,I,II,Engineering Chemistry,CY102
+# R25,CSM,,II,I,Data Structures,CS201
+# R25,CSM,,II,II,Object Oriented Programming,CS202

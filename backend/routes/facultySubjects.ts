@@ -63,7 +63,7 @@ export function createFacultySubjectsRouter(supabase: SupabaseClient) {
 
       const { data, error } = await supabase
         .from("faculty_subjects")
-        .select("id,faculty_id,faculty_name,department,regulation,year,semester,subject_name,subject_code,created_at")
+        .select("id,faculty_id,faculty_name,department,branch,regulation,year,semester,subject_name,subject_code,created_at")
         .eq("faculty_id", faculty_id)
         .order("created_at", { ascending: false });
 
@@ -87,6 +87,7 @@ export function createFacultySubjectsRouter(supabase: SupabaseClient) {
       const semester = norm(body.semester);
       const subject_name = norm(body.subject_name);
       const subject_code = normUpper(body.subject_code);
+      const branchFromBody = normUpper(body.branch);
 
       if (!faculty_id) return res.status(400).json({ error: "faculty_id is required" });
       if (!regulation) return res.status(400).json({ error: "regulation is required" });
@@ -109,10 +110,23 @@ export function createFacultySubjectsRouter(supabase: SupabaseClient) {
       const effectiveDepartment = regulation === "R25" && year === "I" ? "H&S" : String(faculty.department || "").trim();
       if (!effectiveDepartment) return res.status(400).json({ error: "Faculty department is missing" });
 
+      let effectiveBranch = "";
+      if (effectiveDepartment === "H&S") {
+        // For H&S subjects, branch determines which department stream (CSE/CSM/CSD/ECE...) the subject belongs to.
+        // If the Faculty itself belongs to a non-H&S department and we are forcing H&S (R25, Year I), lock branch to that department.
+        if (regulation === "R25" && year === "I" && String(faculty.department || "").trim() && String(faculty.department || "").trim() !== "H&S") {
+          effectiveBranch = String(faculty.department || "").trim().toUpperCase();
+        } else {
+          effectiveBranch = branchFromBody;
+        }
+        if (!effectiveBranch) return res.status(400).json({ error: "branch is required for H&S assignments" });
+      }
+
       const { data: existing, error: exErr } = await supabase
         .from("faculty_subjects")
         .select("id")
         .eq("faculty_id", faculty_id)
+        .eq("branch", effectiveBranch)
         .eq("regulation", regulation)
         .eq("year", year)
         .eq("semester", semester)
@@ -128,13 +142,14 @@ export function createFacultySubjectsRouter(supabase: SupabaseClient) {
           faculty_id,
           faculty_name: String(faculty.name || "").trim(),
           department: effectiveDepartment,
+          branch: effectiveBranch,
           regulation,
           year,
           semester,
           subject_name,
           subject_code,
         })
-        .select("id,faculty_id,faculty_name,department,regulation,year,semester,subject_name,subject_code,created_at")
+        .select("id,faculty_id,faculty_name,department,branch,regulation,year,semester,subject_name,subject_code,created_at")
         .single();
 
       if (insErr) return res.status(400).json({ error: insErr.message });
@@ -152,6 +167,7 @@ export function createFacultySubjectsRouter(supabase: SupabaseClient) {
 
       const faculty_id = norm(req.query.faculty_id);
       const department = norm(req.query.department);
+      const branch = normUpper(req.query.branch);
       const regulation = normUpper(req.query.regulation);
       const year = normUpper(req.query.year);
       const semester = norm(req.query.semester);
@@ -161,17 +177,18 @@ export function createFacultySubjectsRouter(supabase: SupabaseClient) {
 
       let query = supabase
         .from("faculty_subjects")
-        .select("id,faculty_id,faculty_name,department,regulation,year,semester,subject_name,subject_code,created_at")
+        .select("id,faculty_id,faculty_name,department,branch,regulation,year,semester,subject_name,subject_code,created_at")
         .order("created_at", { ascending: false });
 
       if (faculty_id) query = query.eq("faculty_id", faculty_id);
       if (department) query = query.eq("department", department);
+      if (branch) query = query.eq("branch", branch);
       if (regulation) query = query.eq("regulation", regulation);
       if (year) query = query.eq("year", year);
       if (semester) query = query.eq("semester", semester);
       if (q) {
         const like = `%${q.replace(/%/g, "")}%`;
-        query = query.or(`faculty_name.ilike.${like},faculty_id.ilike.${like},subject_name.ilike.${like},subject_code.ilike.${like}`);
+        query = query.or(`faculty_name.ilike.${like},faculty_id.ilike.${like},subject_name.ilike.${like},subject_code.ilike.${like},branch.ilike.${like}`);
       }
 
       const { data, error } = await query;
@@ -184,4 +201,3 @@ export function createFacultySubjectsRouter(supabase: SupabaseClient) {
 
   return router;
 }
-

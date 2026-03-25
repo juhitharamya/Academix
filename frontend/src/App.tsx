@@ -21,7 +21,6 @@ import {
   Save,
   Send,
   Copy,
-  RefreshCw,
   Eye,
   EyeOff
 } from 'lucide-react';
@@ -105,6 +104,7 @@ const AdminSidebar = ({ current, onSelect }: { current: string; onSelect: (v: an
     { key: 'admin-view-users', label: 'View Users', icon: Users },
     { key: 'admin-assign-subjects', label: 'Assign Subjects', icon: BookOpen },
     { key: 'admin-view-assignments', label: 'View Assignments', icon: FileText },
+    { key: 'admin-subjects', label: 'Subjects', icon: BookOpen },
   ];
 
   return (
@@ -419,11 +419,12 @@ function QuestionPaperForm({
   useEffect(() => {
     const useAssigned = user.role === 'FACULTY' && Array.isArray(assignedSubjects) && assignedSubjects.length > 0;
 
-    if (useAssigned) {
-      const reg = String(formData.regulation || '').trim().toUpperCase();
-      const dept = String(formData.department || '').trim();
-      const sem = String(formData.semester || '').trim();
-      const yr = String(formData.year || '').trim().toUpperCase();
+      if (useAssigned) {
+        const reg = String(formData.regulation || '').trim().toUpperCase();
+        const dept = String(formData.department || '').trim();
+        const sem = String(formData.semester || '').trim();
+        const yr = String(formData.year || '').trim().toUpperCase();
+        const br = String(formData.branch || '').trim().toUpperCase();
 
       if (!reg || !dept || !sem || (dept === 'H&S' ? !formData.branch : !yr)) {
         setSubjects([]);
@@ -433,6 +434,11 @@ function QuestionPaperForm({
       const filtered = assignedSubjects.filter((a) => {
         if (String(a.regulation || '').toUpperCase() !== reg) return false;
         if (String(a.department || '') !== dept) return false;
+        if (dept === 'H&S') {
+          const ab = String((a as any).branch || '').trim().toUpperCase();
+          if (br && ab && ab !== br) return false;
+          if (br && !ab) return false;
+        }
         if (String(a.semester || '') !== sem) return false;
         if (String(a.year || '').toUpperCase() !== yr) return false;
         return true;
@@ -461,6 +467,7 @@ function QuestionPaperForm({
         });
         if (formData.department === 'H&S' && formData.branch) {
           params.append('branch', formData.branch);
+          params.append('year', 'I');
         } else if (formData.department !== 'H&S') {
           params.append('year', formData.year);
         }
@@ -950,6 +957,7 @@ export default function App() {
     | 'admin-view-users'
     | 'admin-assign-subjects'
     | 'admin-view-assignments'
+    | 'admin-subjects'
     | 'admin-data'
     | 'admin-user-edit'
     | 'admin-reset-password'
@@ -1050,6 +1058,7 @@ export default function App() {
   const [adminAssignError, setAdminAssignError] = useState<string | null>(null);
   const [adminAssignForm, setAdminAssignForm] = useState({
     faculty_id: '',
+    branch: '',
     regulation: 'R22',
     year: 'II',
     semester: 'I',
@@ -1058,6 +1067,21 @@ export default function App() {
   });
   const [adminAssignSubjects, setAdminAssignSubjects] = useState<Subject[]>([]);
   const [adminAssignSubjectsLoading, setAdminAssignSubjectsLoading] = useState(false);
+
+  const [adminSubjects, setAdminSubjects] = useState<Subject[]>([]);
+  const [adminSubjectsLoading, setAdminSubjectsLoading] = useState(false);
+  const [adminSubjectsError, setAdminSubjectsError] = useState<string | null>(null);
+  const [adminSubjectsNotice, setAdminSubjectsNotice] = useState<string | null>(null);
+  const [adminSubjectsFilters, setAdminSubjectsFilters] = useState({ q: '', regulation: '', department: '', branch: '', year: '', semester: '' });
+  const [adminSubjectForm, setAdminSubjectForm] = useState({
+    regulation: 'R25',
+    department: 'H&S',
+    branch: 'CSE',
+    year: 'I',
+    semester: 'I',
+    subject_name: '',
+    subject_code: '',
+  });
 
   // Evaluation Scripts
   type EvalStudent = { roll_number: string; student_name: string };
@@ -1109,6 +1133,7 @@ export default function App() {
   const [evalObjCoLabelsMcq, setEvalObjCoLabelsMcq] = useState<string[]>(evalObjCoFallback);
   const [evalObjCoLabelsFb, setEvalObjCoLabelsFb] = useState<string[]>(evalObjCoFallback);
   const [evalMarks, setEvalMarks] = useState<Record<string, { descriptive: (number | null)[]; mcq: (number | null)[]; fb: (number | null)[] }>>({});
+  const [evalDescriptiveErrors, setEvalDescriptiveErrors] = useState<Record<string, string>>({});
   const [evalSubmitted, setEvalSubmitted] = useState(false);
   const [evalActiveFacultyId, setEvalActiveFacultyId] = useState<string>('');
   const [evalSubmissions, setEvalSubmissions] = useState<any[]>([]);
@@ -1116,10 +1141,72 @@ export default function App() {
   const sumMarks = (values: Array<number | null | undefined>) =>
     (values || []).reduce((sum, v) => sum + (Number.isFinite(Number(v)) ? Number(v) : 0), 0);
 
+  const normalizeDescriptiveMark = (value: number | null | undefined) => {
+    if (!Number.isFinite(Number(value))) return null;
+    const parsed = Number(value);
+    return parsed >= 0 && parsed <= 5 ? parsed : null;
+  };
+
+  const normalizeObjectiveMark = (value: number | string | null | undefined) => {
+    if (value === null || value === undefined || value === '') return null;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return null;
+    return parsed > 0 ? 0.5 : 0;
+  };
+
+  const getBestDescriptiveResult = (values: Array<number | null | undefined>) => {
+    const ranked = (values || [])
+      .map((value, index) => ({
+        index,
+        value: normalizeDescriptiveMark(value)
+      }))
+      .filter((item) => item.value !== null)
+      .sort((a, b) => (b.value as number) - (a.value as number) || a.index - b.index);
+
+    const selected = ranked.slice(0, 4);
+    const selectedIndices = new Set(selected.map((item) => item.index));
+    const total = selected.reduce((sum, item) => sum + (item.value as number), 0);
+
+    return { total, selectedIndices };
+  };
+
+  const getObjectiveTotal = (values: Array<number | null | undefined>) =>
+    (values || []).reduce((sum, value) => sum + (normalizeObjectiveMark(value) ?? 0), 0);
+
+  const getEvaluationTotals = (marks?: { descriptive: (number | null)[]; mcq: (number | null)[]; fb: (number | null)[] }) => {
+    const current = marks || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
+    const descriptive = getBestDescriptiveResult(current.descriptive);
+    const mcq = getObjectiveTotal(current.mcq);
+    const fb = getObjectiveTotal(current.fb);
+
+    return {
+      descriptiveTotal: descriptive.total,
+      descriptiveSelectedIndices: descriptive.selectedIndices,
+      mcqTotal: mcq,
+      fbTotal: fb,
+      finalTotal: descriptive.total + mcq + fb,
+    };
+  };
+
   const evalStudentsSorted = useMemo(() => (evalList ? sortStudentsByRollNumber(evalList.students || []) : []), [evalList]);
   const [evalSubjects, setEvalSubjects] = useState<Subject[]>([]);
   const [evalSubjectsLoading, setEvalSubjectsLoading] = useState(false);
   const [evalSubjectsError, setEvalSubjectsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!evalStudentsSorted.length) return;
+    for (const student of evalStudentsSorted) {
+      const marks = evalMarks[student.roll_number] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
+      const totals = getEvaluationTotals(marks);
+      console.debug('[EvaluationTotals]', {
+        roll_number: student.roll_number,
+        descriptive_total: totals.descriptiveTotal,
+        objective_part1_total: totals.mcqTotal,
+        objective_part2_total: totals.fbTotal,
+        final_total: totals.finalTotal,
+      });
+    }
+  }, [evalMarks, evalStudentsSorted]);
 
   useEffect(() => {
     const fetchEvalSubjects = async () => {
@@ -1133,6 +1220,7 @@ export default function App() {
           const sem = String(evalFilters.semester || '').trim();
           const yr = String(evalFilters.year || '').trim().toUpperCase();
           const dept = user.department;
+          const br = String(evalFilters.branch || '').trim().toUpperCase();
 
           if (!reg || !sem || !yr) {
             setEvalSubjects([]);
@@ -1144,6 +1232,11 @@ export default function App() {
             if (String(a.semester || '') !== sem) return false;
             if (String(a.year || '').toUpperCase() !== yr) return false;
             if (String(a.department || '') !== dept) return false;
+            if (dept === 'H&S') {
+              const ab = String((a as any).branch || '').trim().toUpperCase();
+              if (br && ab && ab !== br) return false;
+              if (br && !ab) return false;
+            }
             return true;
           });
 
@@ -1173,6 +1266,7 @@ export default function App() {
             return;
           }
           params.append('branch', evalFilters.branch);
+          params.append('year', 'I');
         } else {
           if (!evalFilters.year) {
             setEvalSubjects([]);
@@ -1232,6 +1326,7 @@ export default function App() {
           status: 'Approved',
           subject_code: evalFilters.subject_code,
         });
+        params.set('actor_faculty_id', user.faculty_id);
 
         if (user.department === 'H&S') {
           params.append('branch', evalFilters.branch);
@@ -1286,6 +1381,7 @@ export default function App() {
     try {
       let url = '/api/papers';
       const params = new URLSearchParams();
+      params.set('actor_faculty_id', user.faculty_id);
 
       if (user.role === 'FACULTY') {
         params.set('faculty_id', user.faculty_id);
@@ -1399,15 +1495,6 @@ export default function App() {
     }
   };
 
-  const generatePassword = (length = 12) => {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@#%*-_!';
-    const bytes = new Uint32Array(length);
-    crypto.getRandomValues(bytes);
-    let out = '';
-    for (let i = 0; i < length; i++) out += chars[bytes[i] % chars.length];
-    return out;
-  };
-
   const fetchAdminData = async (table: typeof adminDataTable) => {
     if (!user || user.role !== 'ADMIN') return;
     setAdminDataLoading(true);
@@ -1492,12 +1579,88 @@ export default function App() {
     }
   };
 
+  const fetchAdminSubjects = async () => {
+    if (!user || user.role !== 'ADMIN') return;
+    setAdminSubjectsLoading(true);
+    setAdminSubjectsError(null);
+    try {
+      const qs = new URLSearchParams();
+      if (adminSubjectsFilters.q.trim()) qs.set('q', adminSubjectsFilters.q.trim());
+      if (adminSubjectsFilters.regulation) qs.set('regulation', adminSubjectsFilters.regulation);
+      if (adminSubjectsFilters.department) qs.set('department', adminSubjectsFilters.department);
+      if (adminSubjectsFilters.branch) qs.set('branch', adminSubjectsFilters.branch);
+      if (adminSubjectsFilters.year) qs.set('year', adminSubjectsFilters.year);
+      if (adminSubjectsFilters.semester) qs.set('semester', adminSubjectsFilters.semester);
+
+      const res = await apiFetch(`/api/admin/subjects?${qs.toString()}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to load subjects');
+      setAdminSubjects(Array.isArray(data?.subjects) ? data.subjects : []);
+    } catch (e: any) {
+      setAdminSubjectsError(e?.message || 'Failed to load subjects');
+      setAdminSubjects([]);
+    } finally {
+      setAdminSubjectsLoading(false);
+    }
+  };
+
+  const saveAdminSubject = async () => {
+    if (!user || user.role !== 'ADMIN') return;
+    setAdminSubjectsError(null);
+    setAdminSubjectsNotice(null);
+    try {
+      if (!adminSubjectForm.subject_name.trim()) throw new Error('Subject name is required');
+      if (!adminSubjectForm.subject_code.trim()) throw new Error('Subject code is required');
+      if (!adminSubjectForm.regulation) throw new Error('Regulation is required');
+      if (!adminSubjectForm.department) throw new Error('Department is required');
+      if (!adminSubjectForm.semester) throw new Error('Semester is required');
+
+      const dept = adminSubjectForm.department;
+      const payload: any = {
+        regulation: adminSubjectForm.regulation,
+        department: dept,
+        semester: adminSubjectForm.semester,
+        subject_name: adminSubjectForm.subject_name.trim(),
+        subject_code: adminSubjectForm.subject_code.trim(),
+      };
+      if (dept === 'H&S') {
+        if (!adminSubjectForm.branch) throw new Error('Branch is required for H&S');
+        payload.branch = adminSubjectForm.branch;
+        payload.year = 'I';
+      } else {
+        if (!adminSubjectForm.year) throw new Error('Year is required');
+        payload.year = adminSubjectForm.year;
+        payload.branch = '';
+      }
+
+      const res = await apiFetch('/api/admin/subjects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.success) throw new Error(data?.error || 'Save failed');
+      setAdminSubjectsNotice('Subject saved.');
+      setAdminSubjectForm((p) => ({ ...p, subject_name: '', subject_code: '' }));
+      await fetchAdminSubjects();
+    } catch (e: any) {
+      setAdminSubjectsError(e?.message || 'Save failed');
+    }
+  };
+
   useEffect(() => {
     if (!user || user.role !== 'ADMIN') return;
     if (view !== 'admin-view-assignments') return;
     fetchAdminAssignments();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, user?.faculty_id, user?.role]);
+
+  useEffect(() => {
+    if (!user || user.role !== 'ADMIN') return;
+    if (view !== 'admin-subjects') return;
+    fetchAdminSubjects();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, user?.faculty_id, user?.role, adminSubjectsFilters.q, adminSubjectsFilters.regulation, adminSubjectsFilters.department, adminSubjectsFilters.branch, adminSubjectsFilters.year, adminSubjectsFilters.semester]);
 
   useEffect(() => {
     const loadAssignSubjects = async () => {
@@ -1514,18 +1677,23 @@ export default function App() {
         return;
       }
 
+      const facultyDept = String(faculty.department || '').trim();
+      const reg = String(adminAssignForm.regulation || '').toUpperCase();
+      const year = String(adminAssignForm.year || '').toUpperCase();
+      const effectiveDepartment = reg === 'R25' && year === 'I' ? 'H&S' : facultyDept;
+      const effectiveBranch = effectiveDepartment === 'H&S' ? (facultyDept === 'H&S' ? adminAssignForm.branch : facultyDept) : '';
+
       const params = new URLSearchParams({
         regulation: adminAssignForm.regulation,
         semester: adminAssignForm.semester,
       });
 
-      const reg = String(adminAssignForm.regulation || '').toUpperCase();
-      const year = String(adminAssignForm.year || '').toUpperCase();
-      if (reg === 'R25' && year === 'I') {
+      if (effectiveDepartment === 'H&S') {
         params.set('department', 'H&S');
-        params.append('branch', faculty.department);
+        if (effectiveBranch) params.append('branch', effectiveBranch);
+        params.append('year', 'I');
       } else {
-        params.set('department', faculty.department);
+        params.set('department', effectiveDepartment);
         params.append('year', adminAssignForm.year);
       }
 
@@ -1544,7 +1712,7 @@ export default function App() {
 
     loadAssignSubjects();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, user?.role, adminAssignForm.faculty_id, adminAssignForm.regulation, adminAssignForm.year, adminAssignForm.semester, adminUsers]);
+  }, [view, user?.role, adminAssignForm.faculty_id, adminAssignForm.branch, adminAssignForm.regulation, adminAssignForm.year, adminAssignForm.semester, adminUsers]);
 
   const handleAdminAssignSubject = async () => {
     if (!user || user.role !== 'ADMIN') return;
@@ -1554,11 +1722,20 @@ export default function App() {
       if (!adminAssignForm.faculty_id) throw new Error('Select a faculty');
       if (!adminAssignForm.subject_name || !adminAssignForm.subject_code) throw new Error('Select a subject');
 
+      const faculty = adminUsers.find((u) => u.faculty_id === adminAssignForm.faculty_id);
+      const facultyDept = String(faculty?.department || '').trim();
+      const reg = String(adminAssignForm.regulation || '').toUpperCase();
+      const year = String(adminAssignForm.year || '').toUpperCase();
+      const effectiveDepartment = reg === 'R25' && year === 'I' ? 'H&S' : facultyDept;
+      const effectiveBranch = effectiveDepartment === 'H&S' ? (facultyDept === 'H&S' ? adminAssignForm.branch : facultyDept) : '';
+      if (effectiveDepartment === 'H&S' && !effectiveBranch) throw new Error('Select a branch for H&S');
+
       const res = await apiFetch('/api/admin/faculty-subjects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           faculty_id: adminAssignForm.faculty_id,
+          branch: effectiveBranch,
           regulation: adminAssignForm.regulation,
           year: adminAssignForm.year,
           semester: adminAssignForm.semester,
@@ -2027,9 +2204,11 @@ export default function App() {
           const next: Record<string, { descriptive: (number | null)[]; mcq: (number | null)[]; fb: (number | null)[] }> = {};
           for (const row of mData.marks) {
             next[row.roll_number] = {
-              descriptive: (row.descriptive_marks || []).map((v: any) => (v === null || v === undefined || v === '' ? null : Number(v))),
-              mcq: (row.mcq_marks || []).map((v: any) => (v === null || v === undefined || v === '' ? null : Number(v))),
-              fb: (row.fb_marks || []).map((v: any) => (v === null || v === undefined || v === '' ? null : Number(v))),
+              descriptive: (row.descriptive_marks || []).map((v: any) => {
+                return normalizeDescriptiveMark(v === null || v === undefined || v === '' ? null : Number(v));
+              }),
+              mcq: (row.mcq_marks || []).map((v: any) => normalizeObjectiveMark(v === null || v === undefined || v === '' ? null : Number(v))),
+              fb: (row.fb_marks || []).map((v: any) => normalizeObjectiveMark(v === null || v === undefined || v === '' ? null : Number(v))),
             };
           }
           setEvalMarks(next);
@@ -2044,11 +2223,44 @@ export default function App() {
   };
 
   const updateEvalMark = (roll: string, kind: 'descriptive' | 'mcq' | 'fb', index: number, value: string) => {
+    const errorKey = `${roll}:${kind}:${index}`;
     const num = value === '' ? null : Number(value);
+    if (kind === 'descriptive') {
+      if (value === '') {
+        setEvalDescriptiveErrors((prev) => {
+          const next = { ...prev };
+          delete next[errorKey];
+          return next;
+        });
+      } else if (!Number.isFinite(num as any) || (num as number) < 0 || (num as number) > 5) {
+        setEvalDescriptiveErrors((prev) => ({ ...prev, [errorKey]: 'Marks must be between 0 and 5' }));
+        return;
+      } else {
+        setEvalDescriptiveErrors((prev) => {
+          const next = { ...prev };
+          delete next[errorKey];
+          return next;
+        });
+      }
+    }
+
     setEvalMarks((prev) => {
       const existing = prev[roll] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
       const nextArr = [...(existing as any)[kind]];
-      nextArr[index] = Number.isFinite(num as any) ? (num as any) : null;
+      if (!Number.isFinite(num as any)) {
+        nextArr[index] = null;
+      } else {
+        nextArr[index] = num as any;
+      }
+      return { ...prev, [roll]: { ...existing, [kind]: nextArr } };
+    });
+  };
+
+  const updateObjectiveToggle = (roll: string, kind: 'mcq' | 'fb', index: number, value: 0.5 | 0) => {
+    setEvalMarks((prev) => {
+      const existing = prev[roll] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
+      const nextArr = [...existing[kind]];
+      nextArr[index] = normalizeObjectiveMark(value);
       return { ...prev, [roll]: { ...existing, [kind]: nextArr } };
     });
   };
@@ -2166,7 +2378,7 @@ export default function App() {
       const desc = m.descriptive.map((v) => (v ?? ''));
       const mcq = m.mcq.map((v) => (v ?? ''));
       const fb = m.fb.map((v) => (v ?? ''));
-      const total = [...m.descriptive, ...m.mcq, ...m.fb].reduce((sum: number, v: any) => sum + (Number.isFinite(Number(v)) ? Number(v) : 0), 0);
+      const total = getEvaluationTotals(m).finalTotal;
       return [s.roll_number, s.student_name, ...desc, ...mcq, ...fb, total];
     });
 
@@ -2873,7 +3085,7 @@ export default function App() {
                   <h3 className="font-bold text-black">
                     {user?.role === 'FACULTY' ? 'My Submissions' :
                       user?.role === 'HOD' ? 'My Submissions' :
-                        'Approved Question Papers'}
+                        user?.role === 'EXAM_BRANCH' ? 'Approved Question Papers (All Departments)' : 'Approved Question Papers'}
                   </h3>
                   <div className="flex flex-wrap items-center gap-3">
                     <div className="w-40">
@@ -3245,55 +3457,43 @@ export default function App() {
                       <Button
                         variant="secondary"
                         className="px-3"
-                        onClick={() => setAdminCreateForm((p) => ({ ...p, password: generatePassword(12) }))}
-                        title="Generate password"
-                      >
-                        <RefreshCw size={16} />
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        className="px-3"
-                        onClick={() => copyToClipboard(adminCreateForm.password || '')}
-                        disabled={!adminCreateForm.password}
-                        title="Copy password"
-                      >
-                        <Copy size={16} />
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        className="px-3"
                         onClick={() => setAdminShowCreatePassword((v) => !v)}
                         title={adminShowCreatePassword ? 'Hide password' : 'Show password'}
                       >
                         {adminShowCreatePassword ? <EyeOff size={16} /> : <Eye size={16} />}
                       </Button>
                     </div>
-                    <div className="text-xs text-primary/60">
-                      Generate a password and share it with the user.
-                    </div>
                   </div>
                   <Select
                     label="Role"
                     value={adminCreateForm.role}
-                    onChange={(e: any) => setAdminCreateForm((p) => ({ ...p, role: e.target.value as Role }))}
+                    onChange={(e: any) =>
+                      setAdminCreateForm((p) => {
+                        const nextRole = e.target.value as Role;
+                        if (nextRole === 'EXAM_BRANCH') return { ...p, role: nextRole, department: '' };
+                        return { ...p, role: nextRole, department: p.department || 'CSE' };
+                      })
+                    }
                     options={[
                       { label: 'Faculty', value: 'FACULTY' },
                       { label: 'HOD', value: 'HOD' },
                       { label: 'Exam Branch', value: 'EXAM_BRANCH' },
                     ]}
                   />
-                  <Select
-                    label="Department"
-                    value={adminCreateForm.department}
-                    onChange={(e: any) => setAdminCreateForm((p) => ({ ...p, department: e.target.value }))}
-                    options={[
-                      { label: 'CSE', value: 'CSE' },
-                      { label: 'CSD', value: 'CSD' },
-                      { label: 'CSM', value: 'CSM' },
-                      { label: 'ECE', value: 'ECE' },
-                      { label: 'H&S', value: 'H&S' },
-                    ]}
-                  />
+                  {adminCreateForm.role !== 'EXAM_BRANCH' && (
+                    <Select
+                      label="Department"
+                      value={adminCreateForm.department}
+                      onChange={(e: any) => setAdminCreateForm((p) => ({ ...p, department: e.target.value }))}
+                      options={[
+                        { label: 'CSE', value: 'CSE' },
+                        { label: 'CSD', value: 'CSD' },
+                        { label: 'CSM', value: 'CSM' },
+                        { label: 'ECE', value: 'ECE' },
+                        { label: 'H&S', value: 'H&S' },
+                      ]}
+                    />
+                  )}
                 </div>
 
                 {adminLastCreated && (
@@ -3505,7 +3705,9 @@ export default function App() {
                       <Select
                         label="Faculty Name"
                         value={adminAssignForm.faculty_id}
-                        onChange={(e: any) => setAdminAssignForm((p) => ({ ...p, faculty_id: e.target.value, subject_name: '', subject_code: '' }))}
+                        onChange={(e: any) =>
+                          setAdminAssignForm((p) => ({ ...p, faculty_id: e.target.value, branch: '', subject_name: '', subject_code: '' }))
+                        }
                         options={[
                           { label: 'Select Faculty', value: '' },
                           ...(adminUsers || [])
@@ -3521,17 +3723,45 @@ export default function App() {
                         disabled
                       />
 
-                      <Input
-                        label="Department"
-                        value={(adminUsers.find((u) => u.faculty_id === adminAssignForm.faculty_id)?.department || '')}
-                        readOnly
-                        disabled
-                      />
+                    <Input
+                      label="Department"
+                      value={(adminUsers.find((u) => u.faculty_id === adminAssignForm.faculty_id)?.department || '')}
+                      readOnly
+                      disabled
+                    />
+
+                    {(() => {
+                      const faculty = adminUsers.find((u) => u.faculty_id === adminAssignForm.faculty_id);
+                      const facultyDept = String(faculty?.department || '').trim();
+                      const reg = String(adminAssignForm.regulation || '').toUpperCase();
+                      const year = String(adminAssignForm.year || '').toUpperCase();
+                      const effectiveDepartment = reg === 'R25' && year === 'I' ? 'H&S' : facultyDept;
+                      const mustPickBranch = effectiveDepartment === 'H&S' && facultyDept === 'H&S';
+                      const lockedBranch = effectiveDepartment === 'H&S' && facultyDept !== 'H&S' ? facultyDept : '';
+                      if (effectiveDepartment !== 'H&S') return null;
+                      return (
+                        <Select
+                          label="Branch"
+                          value={lockedBranch || adminAssignForm.branch}
+                          disabled={Boolean(lockedBranch)}
+                          onChange={(e: any) => setAdminAssignForm((p) => ({ ...p, branch: e.target.value, subject_name: '', subject_code: '' }))}
+                          options={[
+                            { label: mustPickBranch ? 'Select Branch' : lockedBranch || 'Branch', value: '' },
+                            { label: 'CSE', value: 'CSE' },
+                            { label: 'CSD', value: 'CSD' },
+                            { label: 'CSM', value: 'CSM' },
+                            { label: 'ECE', value: 'ECE' },
+                          ]}
+                        />
+                      );
+                    })()}
 
                       <Select
                         label="Regulation"
                         value={adminAssignForm.regulation}
-                        onChange={(e: any) => setAdminAssignForm((p) => ({ ...p, regulation: e.target.value, subject_name: '', subject_code: '' }))}
+                        onChange={(e: any) =>
+                          setAdminAssignForm((p) => ({ ...p, regulation: e.target.value, branch: '', subject_name: '', subject_code: '' }))
+                        }
                         options={[
                           { label: 'R22', value: 'R22' },
                           { label: 'R25', value: 'R25' },
@@ -3541,7 +3771,9 @@ export default function App() {
                       <Select
                         label="Year"
                         value={adminAssignForm.year}
-                        onChange={(e: any) => setAdminAssignForm((p) => ({ ...p, year: e.target.value, subject_name: '', subject_code: '' }))}
+                        onChange={(e: any) =>
+                          setAdminAssignForm((p) => ({ ...p, year: e.target.value, branch: '', subject_name: '', subject_code: '' }))
+                        }
                         options={[
                           { label: 'I', value: 'I' },
                           { label: 'II', value: 'II' },
@@ -3553,7 +3785,9 @@ export default function App() {
                       <Select
                         label="Semester"
                         value={adminAssignForm.semester}
-                        onChange={(e: any) => setAdminAssignForm((p) => ({ ...p, semester: e.target.value, subject_name: '', subject_code: '' }))}
+                        onChange={(e: any) =>
+                          setAdminAssignForm((p) => ({ ...p, semester: e.target.value, branch: '', subject_name: '', subject_code: '' }))
+                        }
                         options={[
                           { label: 'Sem I', value: 'I' },
                           { label: 'Sem II', value: 'II' },
@@ -3671,6 +3905,248 @@ export default function App() {
                       </table>
                     </div>
                   </div>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {view === 'admin-subjects' && user?.role === 'ADMIN' && (
+            <motion.div
+              key="admin-subjects"
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+              className="space-y-6"
+            >
+              <div className="bg-white border border-primary/10 rounded-xl overflow-hidden">
+                <div className="grid grid-cols-1 md:grid-cols-[260px_1fr]">
+                  <div className="md:border-r md:border-primary/10">
+                    <AdminSidebar current={view} onSelect={setView} />
+                  </div>
+                  <div className="p-4 md:p-6 space-y-6">
+                    <div className="flex items-center justify-between gap-4">
+                      <h2 className="text-2xl font-bold text-black">Subjects</h2>
+                      <Button onClick={saveAdminSubject}>
+                        <Save size={18} />
+                        Save Subject
+                      </Button>
+                    </div>
+
+                    {(adminSubjectsError) && (
+                      <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2 border border-red-100">
+                        <AlertCircle size={16} />
+                        {adminSubjectsError}
+                      </div>
+                    )}
+
+                    {adminSubjectsNotice && (
+                      <div className="p-3 bg-emerald-50 text-emerald-700 text-sm rounded-lg flex items-center gap-2 border border-emerald-200">
+                        <CheckCircle size={16} />
+                        {adminSubjectsNotice}
+                      </div>
+                    )}
+
+                    <div className="bg-white rounded-lg border border-primary/10 overflow-hidden">
+                      <div className="px-6 py-4 border-b border-primary/10 bg-primary-light/20 flex items-center justify-between">
+                        <div className="font-bold text-primary flex items-center gap-2">
+                          <BookOpen size={18} />
+                          Add / Update Subject
+                        </div>
+                      </div>
+                      <div className="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <Select
+                          label="Regulation"
+                          value={adminSubjectForm.regulation}
+                          onChange={(e: any) => setAdminSubjectForm((p) => ({ ...p, regulation: e.target.value }))}
+                          options={[
+                            { label: 'R22', value: 'R22' },
+                            { label: 'R25', value: 'R25' },
+                          ]}
+                        />
+                        <Select
+                          label="Department"
+                          value={adminSubjectForm.department}
+                          onChange={(e: any) => {
+                            const dept = e.target.value;
+                            setAdminSubjectForm((p) => ({
+                              ...p,
+                              department: dept,
+                              year: dept === 'H&S' ? 'I' : (p.year === 'I' ? 'II' : p.year),
+                              branch: dept === 'H&S' ? (p.branch || 'CSE') : '',
+                            }));
+                          }}
+                          options={[
+                            { label: 'H&S', value: 'H&S' },
+                            { label: 'CSM', value: 'CSM' },
+                            { label: 'CSE', value: 'CSE' },
+                            { label: 'CSD', value: 'CSD' },
+                            { label: 'ECE', value: 'ECE' },
+                          ]}
+                        />
+
+                        {adminSubjectForm.department === 'H&S' ? (
+                          <Select
+                            label="Branch"
+                            value={adminSubjectForm.branch}
+                            onChange={(e: any) => setAdminSubjectForm((p) => ({ ...p, branch: e.target.value }))}
+                            options={[
+                              { label: 'CSE', value: 'CSE' },
+                              { label: 'CSD', value: 'CSD' },
+                              { label: 'CSM', value: 'CSM' },
+                              { label: 'ECE', value: 'ECE' },
+                            ]}
+                          />
+                        ) : (
+                          <Select
+                            label="Year"
+                            value={adminSubjectForm.year}
+                            onChange={(e: any) => setAdminSubjectForm((p) => ({ ...p, year: e.target.value }))}
+                            options={[
+                              { label: 'II', value: 'II' },
+                              { label: 'III', value: 'III' },
+                              { label: 'IV', value: 'IV' },
+                            ]}
+                          />
+                        )}
+
+                        <Select
+                          label="Semester"
+                          value={adminSubjectForm.semester}
+                          onChange={(e: any) => setAdminSubjectForm((p) => ({ ...p, semester: e.target.value }))}
+                          options={[
+                            { label: 'Sem I', value: 'I' },
+                            { label: 'Sem II', value: 'II' },
+                          ]}
+                        />
+
+                        <Input
+                          label="Subject Name"
+                          value={adminSubjectForm.subject_name}
+                          onChange={(e: any) => setAdminSubjectForm((p) => ({ ...p, subject_name: e.target.value }))}
+                        />
+                        <Input
+                          label="Subject Code"
+                          value={adminSubjectForm.subject_code}
+                          onChange={(e: any) => setAdminSubjectForm((p) => ({ ...p, subject_code: e.target.value }))}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="bg-white rounded-lg border border-primary/10 overflow-hidden">
+                      <div className="px-6 py-4 border-b border-primary/10 bg-primary-light/20 flex flex-wrap items-center justify-between gap-3">
+                        <div className="font-bold text-primary flex items-center gap-2">
+                          <FileText size={18} />
+                          Subjects List
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="w-56">
+                            <Input
+                              placeholder="Search name or code..."
+                              value={adminSubjectsFilters.q}
+                              onChange={(e: any) => setAdminSubjectsFilters((p) => ({ ...p, q: e.target.value }))}
+                            />
+                          </div>
+                          <div className="w-28">
+                            <Select
+                              value={adminSubjectsFilters.regulation}
+                              onChange={(e: any) => setAdminSubjectsFilters((p) => ({ ...p, regulation: e.target.value }))}
+                              options={[
+                                { label: 'All Regs', value: '' },
+                                { label: 'R22', value: 'R22' },
+                                { label: 'R25', value: 'R25' },
+                              ]}
+                            />
+                          </div>
+                          <div className="w-28">
+                            <Select
+                              value={adminSubjectsFilters.department}
+                              onChange={(e: any) => setAdminSubjectsFilters((p) => ({ ...p, department: e.target.value, branch: '' }))}
+                              options={[
+                                { label: 'All Depts', value: '' },
+                                { label: 'H&S', value: 'H&S' },
+                                { label: 'CSM', value: 'CSM' },
+                                { label: 'CSE', value: 'CSE' },
+                                { label: 'CSD', value: 'CSD' },
+                                { label: 'ECE', value: 'ECE' },
+                              ]}
+                            />
+                          </div>
+                          {adminSubjectsFilters.department === 'H&S' && (
+                            <div className="w-28">
+                              <Select
+                                value={adminSubjectsFilters.branch}
+                                onChange={(e: any) => setAdminSubjectsFilters((p) => ({ ...p, branch: e.target.value }))}
+                                options={[
+                                  { label: 'All', value: '' },
+                                  { label: 'CSE', value: 'CSE' },
+                                  { label: 'CSD', value: 'CSD' },
+                                  { label: 'CSM', value: 'CSM' },
+                                  { label: 'ECE', value: 'ECE' },
+                                ]}
+                              />
+                            </div>
+                          )}
+                          <Button variant="secondary" onClick={fetchAdminSubjects} disabled={adminSubjectsLoading}>
+                            {adminSubjectsLoading ? 'Loading...' : 'Refresh'}
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left">
+                          <thead>
+                            <tr className="bg-primary-light/10 text-primary/60 text-xs uppercase tracking-wider font-semibold">
+                              <th className="px-6 py-4">Reg</th>
+                              <th className="px-6 py-4">Dept</th>
+                              <th className="px-6 py-4">Branch</th>
+                              <th className="px-6 py-4">Year</th>
+                              <th className="px-6 py-4">Sem</th>
+                              <th className="px-6 py-4">Subject</th>
+                              <th className="px-6 py-4">Code</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-primary/5">
+                            {adminSubjectsLoading && adminSubjects.length === 0 ? (
+                              <tr>
+                                <td colSpan={7} className="px-6 py-10 text-center text-primary/50 text-sm">Loading...</td>
+                              </tr>
+                            ) : adminSubjects.length === 0 ? (
+                              <tr>
+                                <td colSpan={7} className="px-6 py-10 text-center text-primary/50 text-sm">No subjects found.</td>
+                              </tr>
+                            ) : (
+                              adminSubjects.map((s) => (
+                                <tr
+                                  key={String((s as any).id || '') + s.subject_code + s.department + (s as any).branch + (s.year || '') + s.semester + s.regulation}
+                                  className="hover:bg-primary-light/10 cursor-pointer"
+                                  title="Click to load into form"
+                                  onClick={() =>
+                                    setAdminSubjectForm({
+                                      regulation: s.regulation,
+                                      department: s.department,
+                                      branch: String((s as any).branch || '') || 'CSE',
+                                      year: (s as any).year || 'II',
+                                      semester: s.semester,
+                                      subject_name: s.subject_name,
+                                      subject_code: s.subject_code,
+                                    })
+                                  }
+                                >
+                                  <td className="px-6 py-4 text-sm text-primary/60">{s.regulation}</td>
+                                  <td className="px-6 py-4 text-sm text-primary/60">{s.department}</td>
+                                  <td className="px-6 py-4 text-sm text-primary/60">{String((s as any).branch || '')}</td>
+                                  <td className="px-6 py-4 text-sm text-primary/60">{String((s as any).year || '')}</td>
+                                  <td className="px-6 py-4 text-sm text-primary/60">{s.semester}</td>
+                                  <td className="px-6 py-4 text-sm text-black/80">{s.subject_name}</td>
+                                  <td className="px-6 py-4 text-sm text-primary/60">{s.subject_code}</td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -3895,23 +4371,6 @@ export default function App() {
                         type={adminShowResetPassword ? 'text' : 'password'}
                         className="w-full px-3 py-2 border border-primary/10 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all"
                       />
-                      <Button
-                        variant="secondary"
-                        className="px-3"
-                        onClick={() => setAdminResetForm((p) => ({ ...p, new_password: generatePassword(12) }))}
-                        title="Generate password"
-                      >
-                        <RefreshCw size={16} />
-                      </Button>
-                      <Button
-                        variant="secondary"
-                        className="px-3"
-                        onClick={() => copyToClipboard(adminResetForm.new_password || '')}
-                        disabled={!adminResetForm.new_password}
-                        title="Copy password"
-                      >
-                        <Copy size={16} />
-                      </Button>
                       <Button
                         variant="secondary"
                         className="px-3"
@@ -4295,7 +4754,14 @@ export default function App() {
                   </div>
 
                   {evalStep === 'descriptive' && (
-                    <div className="overflow-x-auto">
+                    <div className="space-y-3">
+                      <div className="text-sm text-black/60">
+                        Enter all 6 descriptive marks. The system automatically counts the best 4 answers and ignores the lowest 2.
+                      </div>
+                      <div className="text-xs text-primary/60">
+                        Maximum marks per question is 5.
+                      </div>
+                      <div className="overflow-x-auto">
                       <table className="w-full text-left">
                         <thead>
                           <tr className="bg-primary-light/10 text-primary/60 text-xs uppercase tracking-wider font-semibold">
@@ -4310,29 +4776,51 @@ export default function App() {
                         <tbody className="divide-y divide-primary/5">
                           {evalStudentsSorted.map((s) => {
                             const m = evalMarks[s.roll_number] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
-                            const total = sumMarks([...m.descriptive, ...m.mcq, ...m.fb]);
+                            const totals = getEvaluationTotals(m);
 
                             return (
                               <tr key={s.roll_number} className="hover:bg-primary-light/10">
                                 <td className="px-4 py-3 text-sm font-medium text-black">{s.roll_number}</td>
                                 <td className="px-4 py-3 text-sm text-black/80">{s.student_name}</td>
-                                {Array.from({ length: 6 }, (_, i) => (
-                                  <td key={i} className="px-2 py-2">
-                                    <input
-                                      type="number"
-                                      min={0}
-                                      className="w-20 px-2 py-1 border border-primary/10 rounded-lg text-sm text-center"
-                                      value={(m.descriptive?.[i] ?? '') as any}
-                                      onChange={(e) => updateEvalMark(s.roll_number, 'descriptive', i, e.target.value)}
-                                    />
-                                  </td>
-                                ))}
-                                <td className="px-4 py-3 text-sm font-bold text-center text-black">{total}</td>
+                                {Array.from({ length: 6 }, (_, i) => {
+                                  const errorKey = `${s.roll_number}:descriptive:${i}`;
+                                  const fieldError = evalDescriptiveErrors[errorKey];
+
+                                  return (
+                                    <td key={i} className="px-2 py-2 align-top">
+                                      <div className="space-y-1">
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          max={5}
+                                          step={1}
+                                          title="Maximum marks per question is 5"
+                                          className={`w-20 px-2 py-1 border rounded-lg text-sm text-center transition-colors ${
+                                            fieldError
+                                              ? 'border-red-500 bg-red-50 text-red-700'
+                                              : totals.descriptiveSelectedIndices.has(i)
+                                                ? 'border-emerald-400 bg-emerald-50 text-emerald-700 font-semibold'
+                                                : 'border-primary/10'
+                                          }`}
+                                          value={(m.descriptive?.[i] ?? '') as any}
+                                          onChange={(e) => updateEvalMark(s.roll_number, 'descriptive', i, e.target.value)}
+                                        />
+                                        {fieldError && (
+                                          <div className="w-20 text-[10px] leading-tight text-red-600 text-center">
+                                            {fieldError}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </td>
+                                  );
+                                })}
+                                <td className="px-4 py-3 text-sm font-bold text-center text-black">{totals.descriptiveTotal}</td>
                               </tr>
                             );
                           })}
                         </tbody>
                       </table>
+                    </div>
                     </div>
                   )}
 
@@ -4354,7 +4842,7 @@ export default function App() {
                           <tbody className="divide-y divide-primary/5">
                             {evalStudentsSorted.map((s) => {
                               const m = evalMarks[s.roll_number] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
-                              const total = sumMarks([...m.descriptive, ...m.mcq, ...m.fb]);
+                              const totals = getEvaluationTotals(m);
 
                               return (
                                 <tr key={s.roll_number} className="hover:bg-primary-light/10">
@@ -4362,16 +4850,35 @@ export default function App() {
                                   <td className="px-4 py-3 text-sm text-black/80">{s.student_name}</td>
                                   {Array.from({ length: 10 }, (_, i) => (
                                     <td key={i} className="px-2 py-2">
-                                      <input
-                                        type="number"
-                                        min={0}
-                                        className="w-20 px-2 py-1 border border-primary/10 rounded-lg text-sm text-center"
-                                        value={(m.mcq?.[i] ?? '') as any}
-                                        onChange={(e) => updateEvalMark(s.roll_number, 'mcq', i, e.target.value)}
-                                      />
+                                      <div className="flex items-center justify-center gap-1">
+                                        <button
+                                          type="button"
+                                          className={`h-8 w-8 rounded-lg border text-sm font-bold transition-colors ${
+                                            m.mcq?.[i] === 0.5
+                                              ? 'border-emerald-600 bg-emerald-600 text-white'
+                                              : 'border-emerald-200 text-emerald-700 hover:bg-emerald-50'
+                                          }`}
+                                          onClick={() => updateObjectiveToggle(s.roll_number, 'mcq', i, 0.5)}
+                                          aria-label={`Mark MCQ ${i + 1} correct for ${s.roll_number}`}
+                                        >
+                                          ✔
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className={`h-8 w-8 rounded-lg border text-sm font-bold transition-colors ${
+                                            m.mcq?.[i] === 0
+                                              ? 'border-red-600 bg-red-600 text-white'
+                                              : 'border-red-200 text-red-700 hover:bg-red-50'
+                                          }`}
+                                          onClick={() => updateObjectiveToggle(s.roll_number, 'mcq', i, 0)}
+                                          aria-label={`Mark MCQ ${i + 1} wrong for ${s.roll_number}`}
+                                        >
+                                          ✘
+                                        </button>
+                                      </div>
                                     </td>
                                   ))}
-                                  <td className="px-4 py-3 text-sm font-bold text-center text-black">{total}</td>
+                                  <td className="px-4 py-3 text-sm font-bold text-center text-black">{totals.finalTotal}</td>
                                 </tr>
                               );
                             })}
@@ -4395,7 +4902,7 @@ export default function App() {
                           <tbody className="divide-y divide-primary/5">
                             {evalStudentsSorted.map((s) => {
                               const m = evalMarks[s.roll_number] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
-                              const total = sumMarks([...m.descriptive, ...m.mcq, ...m.fb]);
+                              const totals = getEvaluationTotals(m);
 
                               return (
                                 <tr key={s.roll_number} className="hover:bg-primary-light/10">
@@ -4403,16 +4910,35 @@ export default function App() {
                                   <td className="px-4 py-3 text-sm text-black/80">{s.student_name}</td>
                                   {Array.from({ length: 10 }, (_, i) => (
                                     <td key={i} className="px-2 py-2">
-                                      <input
-                                        type="number"
-                                        min={0}
-                                        className="w-20 px-2 py-1 border border-primary/10 rounded-lg text-sm text-center"
-                                        value={(m.fb?.[i] ?? '') as any}
-                                        onChange={(e) => updateEvalMark(s.roll_number, 'fb', i, e.target.value)}
-                                      />
+                                      <div className="flex items-center justify-center gap-1">
+                                        <button
+                                          type="button"
+                                          className={`h-8 w-8 rounded-lg border text-sm font-bold transition-colors ${
+                                            m.fb?.[i] === 0.5
+                                              ? 'border-emerald-600 bg-emerald-600 text-white'
+                                              : 'border-emerald-200 text-emerald-700 hover:bg-emerald-50'
+                                          }`}
+                                          onClick={() => updateObjectiveToggle(s.roll_number, 'fb', i, 0.5)}
+                                          aria-label={`Mark fill in the blank ${i + 1} correct for ${s.roll_number}`}
+                                        >
+                                          ✔
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className={`h-8 w-8 rounded-lg border text-sm font-bold transition-colors ${
+                                            m.fb?.[i] === 0
+                                              ? 'border-red-600 bg-red-600 text-white'
+                                              : 'border-red-200 text-red-700 hover:bg-red-50'
+                                          }`}
+                                          onClick={() => updateObjectiveToggle(s.roll_number, 'fb', i, 0)}
+                                          aria-label={`Mark fill in the blank ${i + 1} wrong for ${s.roll_number}`}
+                                        >
+                                          ✘
+                                        </button>
+                                      </div>
                                     </td>
                                   ))}
-                                  <td className="px-4 py-3 text-sm font-bold text-center text-black">{total}</td>
+                                  <td className="px-4 py-3 text-sm font-bold text-center text-black">{totals.finalTotal}</td>
                                 </tr>
                               );
                             })}

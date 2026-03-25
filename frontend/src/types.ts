@@ -46,6 +46,7 @@ export interface FacultySubjectAssignment {
   faculty_id: string;
   faculty_name: string;
   department: string;
+  branch?: string;
   regulation: string;
   year: string;
   semester: string;

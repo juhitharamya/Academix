@@ -138,6 +138,7 @@ create table if not exists public.faculty_subjects (
   faculty_id text not null,
   faculty_name text not null,
   department text not null,
+  branch text not null default '',
   regulation text not null,
   year text not null,
   semester text not null,
@@ -146,12 +147,16 @@ create table if not exists public.faculty_subjects (
   created_at timestamptz not null default now()
 );
 
+-- Backfill/migrate safely if the table already exists.
+alter table if exists public.faculty_subjects
+  add column if not exists branch text not null default '';
+
 create index if not exists faculty_subjects_faculty_idx
   on public.faculty_subjects (faculty_id, created_at desc);
 
 create index if not exists faculty_subjects_filter_idx
-  on public.faculty_subjects (department, regulation, year, semester, subject_code);
+  on public.faculty_subjects (department, branch, regulation, year, semester, subject_code);
 
 -- Prevent duplicate assignments for the same faculty+offering.
 create unique index if not exists faculty_subjects_unique_idx
-  on public.faculty_subjects (faculty_id, regulation, year, semester, subject_code);
+  on public.faculty_subjects (faculty_id, branch, regulation, year, semester, subject_code);

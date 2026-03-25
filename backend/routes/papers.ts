@@ -1,5 +1,6 @@
 import express from "express";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { requireUserByFacultyId } from "./supabaseUtils.ts";
 
 function asSetBuckets(questions: any[]) {
   const subjective: any[] = [];
@@ -39,7 +40,41 @@ export function createPapersRouter(supabase: SupabaseClient) {
 
   router.get("/api/papers", async (req, res) => {
     try {
-      const { faculty_id, department, branch, regulation, year, semester, mid_exam_type, status, hod_department, subject_code, subject_name } = req.query as any;
+      const query = req.query as any;
+      let faculty_id = String(query.faculty_id || "").trim();
+      let department = String(query.department || "").trim();
+      let branch = String(query.branch || "").trim();
+      let regulation = String(query.regulation || "").trim();
+      let year = String(query.year || "").trim();
+      let semester = String(query.semester || "").trim();
+      let mid_exam_type = String(query.mid_exam_type || "").trim();
+      let status = String(query.status || "").trim();
+      let hod_department = String(query.hod_department || "").trim();
+      const subject_code = String(query.subject_code || "").trim();
+      const subject_name = String(query.subject_name || "").trim();
+
+      // Optional: enforce role-based access when actor_faculty_id is provided.
+      const actorId = String(query.actor_faculty_id || "").trim();
+      if (actorId) {
+        const actorCheck = await requireUserByFacultyId(supabase, actorId);
+        if (!actorCheck.ok) return res.status(actorCheck.status).json({ error: actorCheck.error });
+
+        const actorRole = actorCheck.user.role;
+        if (actorRole === "FACULTY") {
+          faculty_id = actorCheck.user.faculty_id;
+          hod_department = "";
+        } else if (actorRole === "HOD") {
+          faculty_id = "";
+          hod_department = actorCheck.user.department;
+        } else if (actorRole === "EXAM_BRANCH") {
+          faculty_id = "";
+          hod_department = "";
+          status = "Approved";
+        } else if (actorRole === "ADMIN") {
+          // No restrictions.
+        }
+      }
+
       let q = supabase.from("question_papers").select("*");
 
       if (faculty_id) q = q.eq("faculty_id", faculty_id);
@@ -61,8 +96,8 @@ export function createPapersRouter(supabase: SupabaseClient) {
       if (semester) q = q.eq("semester", semester);
       if (mid_exam_type) q = q.eq("mid_type", mid_exam_type);
       if (status) q = q.eq("status", status);
-      if (subject_code) q = q.eq("subject_code", String(subject_code).trim());
-      if (subject_name) q = q.eq("subject_name", String(subject_name).trim());
+      if (subject_code) q = q.eq("subject_code", subject_code);
+      if (subject_name) q = q.eq("subject_name", subject_name);
 
       q = q.order("created_at", { ascending: false });
 

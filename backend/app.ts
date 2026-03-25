@@ -10,6 +10,7 @@ import { createSubjectsRouter } from "./routes/subjects.ts";
 import { createPapersRouter } from "./routes/papers.ts";
 import { createEvaluationRouter } from "./routes/evaluation.ts";
 import { createFacultySubjectsRouter } from "./routes/facultySubjects.ts";
+import { createAdminSubjectsRouter } from "./routes/adminSubjects.ts";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 export function createApp(opts: { supabase: SupabaseClient; apiOnly: boolean; serveStatic: boolean; distDir: string }) {
@@ -138,6 +139,7 @@ export function createApp(opts: { supabase: SupabaseClient; apiOnly: boolean; se
   app.use(createAuthRouter(supabase));
   app.use(createUsersRouter(supabase));
   app.use(createAdminRouter(supabase));
+  app.use(createAdminSubjectsRouter(supabase));
   app.use(createFacultySubjectsRouter(supabase));
   app.use(createSubjectsRouter(supabase));
   app.use(createPapersRouter(supabase));
