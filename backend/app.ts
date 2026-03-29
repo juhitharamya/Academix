@@ -94,7 +94,10 @@ export function createApp(opts: { supabase: SupabaseClient; apiOnly: boolean; se
         });
       }
 
-      const { error: facultySubjectsErr } = await supabase.from("faculty_subjects").select("id", { head: true, count: "exact" }).limit(1);
+      const { error: facultySubjectsErr } = await supabase
+        .from("faculty_subjects")
+        .select("id,branch", { head: true, count: "exact" })
+        .limit(1);
 
       return res.json({
         ok: true,
@@ -114,7 +117,7 @@ export function createApp(opts: { supabase: SupabaseClient; apiOnly: boolean; se
               {
                 table: "faculty_subjects",
                 error: facultySubjectsErr.message,
-                hint: "Run database/supabase-schema.sql in the Supabase SQL editor to create missing tables, then wait a moment for the API schema cache to refresh.",
+                hint: "Run database/supabase-schema.sql, or the targeted migration database/migrations/2026-03-25-add-branch-to-faculty-subjects.sql, in the Supabase SQL editor and wait a moment for the API schema cache to refresh.",
               },
             ]
           : [],

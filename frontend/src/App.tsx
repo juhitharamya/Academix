@@ -1084,18 +1084,32 @@ export default function App() {
   });
 
   // Evaluation Scripts
-  type EvalStudent = { roll_number: string; student_name: string };
-  type EvalStudentList = {
-    id: number;
-    department: string;
-    branch: string;
-    regulation: string;
-    year: string;
-    section: string;
-    uploaded_by: string;
-    uploaded_at: string;
-    students: EvalStudent[];
-  };
+type EvalStudent = { roll_number: string; student_name: string };
+type EvalStudentList = {
+  id: string;
+  department: string;
+  branch: string;
+  regulation: string;
+  year: string;
+  semester?: string;
+  section: string;
+  uploaded_by: string;
+  uploaded_at: string;
+  students: EvalStudent[];
+};
+type EvalStudentListSummary = {
+  id: string;
+  department: string;
+  branch: string;
+  regulation: string;
+  year: string;
+  semester: string;
+  section: string;
+  uploaded_by: string;
+  uploaded_at: string;
+  file_name: string;
+  count: number;
+};
 
   const compareRollNumbers = (a: string, b: string) => {
     const na = Number(a);
@@ -1104,13 +1118,43 @@ export default function App() {
     return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
   };
 
+  const normalizeAcademicYear = (value: string) => {
+    const upper = String(value || '').trim().toUpperCase();
+    if (!upper) return '';
+    if (upper.startsWith('I ')) return 'I';
+    if (upper.startsWith('II ')) return 'II';
+    if (upper.startsWith('III ')) return 'III';
+    if (upper.startsWith('IV ')) return 'IV';
+    return upper;
+  };
+
+  const normalizeAcademicSemester = (value: string) => {
+    const upper = String(value || '').trim().toUpperCase();
+    if (!upper) return '';
+    if (upper === 'I' || upper === 'SEM I' || upper === 'SEMESTER I') return 'I';
+    if (upper === 'II' || upper === 'SEM II' || upper === 'SEMESTER II') return 'II';
+    return upper;
+  };
+
+  const normalizeAcademicDepartment = (value: string) => String(value || '').trim().toUpperCase();
+
   const sortStudentsByRollNumber = (students: EvalStudent[]) =>
     [...students].sort((x, y) => compareRollNumbers(x.roll_number, y.roll_number) || x.student_name.localeCompare(y.student_name));
 
-  const [evalUploadFilters, setEvalUploadFilters] = useState({ regulation: 'R22', year: 'II', section: 'A', branch: 'CSE' });
+  const [evalUploadFilters, setEvalUploadFilters] = useState({ regulation: 'R22', year: 'II', semester: 'I', section: 'A', branch: 'CSE' });
   const [evalUploadFile, setEvalUploadFile] = useState<File | null>(null);
   const [evalUploadError, setEvalUploadError] = useState<string | null>(null);
   const [evalUploadSuccess, setEvalUploadSuccess] = useState<string | null>(null);
+  const [hodStudentLists, setHodStudentLists] = useState<EvalStudentListSummary[]>([]);
+  const [hodStudentListsLoading, setHodStudentListsLoading] = useState(false);
+  const [hodStudentListEditor, setHodStudentListEditor] = useState<EvalStudentList | null>(null);
+  const [hodStudentListDraft, setHodStudentListDraft] = useState<EvalStudent[]>([]);
+  const [hodStudentListSaving, setHodStudentListSaving] = useState(false);
+  const [evalListAvailability, setEvalListAvailability] = useState<{ checking: boolean; exists: boolean; message: string | null }>({
+    checking: false,
+    exists: false,
+    message: null,
+  });
 
   const [evalFilters, setEvalFilters] = useState({
     regulation: 'R22',
@@ -1217,9 +1261,9 @@ export default function App() {
       try {
         if (user.role === 'FACULTY' && assignedSubjects.length) {
           const reg = String(evalFilters.regulation || '').trim().toUpperCase();
-          const sem = String(evalFilters.semester || '').trim();
-          const yr = String(evalFilters.year || '').trim().toUpperCase();
-          const dept = user.department;
+          const sem = normalizeAcademicSemester(evalFilters.semester || '');
+          const yr = normalizeAcademicYear(evalFilters.year || '');
+          const dept = normalizeAcademicDepartment(user.department || '');
           const br = String(evalFilters.branch || '').trim().toUpperCase();
 
           if (!reg || !sem || !yr) {
@@ -1229,9 +1273,9 @@ export default function App() {
 
           const filtered = assignedSubjects.filter((a) => {
             if (String(a.regulation || '').toUpperCase() !== reg) return false;
-            if (String(a.semester || '') !== sem) return false;
-            if (String(a.year || '').toUpperCase() !== yr) return false;
-            if (String(a.department || '') !== dept) return false;
+            if (normalizeAcademicSemester(String(a.semester || '')) !== sem) return false;
+            if (normalizeAcademicYear(String(a.year || '')) !== yr) return false;
+            if (normalizeAcademicDepartment(String(a.department || '')) !== dept) return false;
             if (dept === 'H&S') {
               const ab = String((a as any).branch || '').trim().toUpperCase();
               if (br && ab && ab !== br) return false;
@@ -2094,6 +2138,52 @@ export default function App() {
     throw new Error('Unsupported file type. Please upload CSV or XLSX.');
   }
 
+  const fetchHodStudentLists = async () => {
+    if (!user || user.role !== 'HOD') return;
+    setHodStudentListsLoading(true);
+    try {
+      const qs = new URLSearchParams({ hod_faculty_id: user.faculty_id });
+      const res = await fetch(`/api/eval/student-lists/manage?${qs.toString()}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to load uploaded student lists');
+      setHodStudentLists(Array.isArray(data?.lists) ? data.lists : []);
+    } catch (e: any) {
+      setEvalUploadError(e?.message || 'Failed to load uploaded student lists');
+      setHodStudentLists([]);
+    } finally {
+      setHodStudentListsLoading(false);
+    }
+  };
+
+  const saveHodStudentList = async (
+    studentsInput: Array<{ roll_number: string; student_name: string }>,
+    overrides?: Partial<typeof evalUploadFilters>,
+  ) => {
+    if (!user || user.role !== 'HOD') return;
+    const nextFilters = { ...evalUploadFilters, ...(overrides || {}) };
+    const students = sortStudentsByRollNumber(studentsInput);
+    if (!students.length) throw new Error('No valid students found in the list.');
+
+    const res = await fetch('/api/eval/student-lists', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        hod_faculty_id: user.faculty_id,
+        department: user.department,
+        branch: user.department === 'H&S' ? nextFilters.branch : '',
+        regulation: nextFilters.regulation,
+        year: nextFilters.year,
+        semester: nextFilters.semester,
+        section: nextFilters.section,
+        students,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || 'Failed to save student list');
+    await fetchHodStudentLists();
+    return data;
+  };
+
   const handleHodUploadStudentList = async () => {
     if (!user) return;
     setEvalUploadError(null);
@@ -2110,30 +2200,107 @@ export default function App() {
     setEvalLoading(true);
     try {
       const studentsRaw = await parseStudentListFile(evalUploadFile);
-      if (!studentsRaw.length) throw new Error('No valid students found in the file.');
-      const students = sortStudentsByRollNumber(studentsRaw);
-
-      const res = await fetch('/api/eval/student-lists', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          hod_faculty_id: user.faculty_id,
-          department: user.department,
-          branch: user.department === 'H&S' ? evalUploadFilters.branch : '',
-          regulation: evalUploadFilters.regulation,
-          year: evalUploadFilters.year,
-          section: evalUploadFilters.section,
-          students,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data?.error || 'Failed to upload student list');
-      setEvalUploadSuccess(`Uploaded ${data?.count || students.length} students successfully.`);
+      const data = await saveHodStudentList(studentsRaw);
+      setEvalUploadSuccess(`Uploaded ${data?.count || studentsRaw.length} students successfully.`);
       setEvalUploadFile(null);
+      setHodStudentListEditor(null);
+      setHodStudentListDraft([]);
     } catch (e: any) {
       setEvalUploadError(e?.message || 'Upload failed');
     } finally {
       setEvalLoading(false);
+    }
+  };
+
+  const openHodStudentListEditor = async (list: EvalStudentListSummary) => {
+    if (!user || user.role !== 'HOD') return;
+    setEvalUploadError(null);
+    setEvalUploadSuccess(null);
+    setHodStudentListSaving(true);
+    try {
+      setEvalUploadFilters({
+        regulation: list.regulation,
+        year: list.year,
+        semester: list.semester || 'I',
+        section: list.section,
+        branch: list.branch || 'CSE',
+      });
+      const qs = new URLSearchParams({
+        department: list.department,
+        regulation: list.regulation,
+        year: list.year,
+        section: list.section,
+        ...(list.branch ? { branch: list.branch } : {}),
+      });
+      const res = await fetch(`/api/eval/student-lists?${qs.toString()}`);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to load student list');
+      setHodStudentListEditor(data.list || null);
+      setHodStudentListDraft(Array.isArray(data?.list?.students) ? sortStudentsByRollNumber(data.list.students) : []);
+      setEvalUploadFile(null);
+    } catch (e: any) {
+      setEvalUploadError(e?.message || 'Failed to open student list');
+    } finally {
+      setHodStudentListSaving(false);
+    }
+  };
+
+  const saveEditedHodStudentList = async () => {
+    if (!hodStudentListEditor) return;
+    setEvalUploadError(null);
+    setEvalUploadSuccess(null);
+    setHodStudentListSaving(true);
+    try {
+      const data = await saveHodStudentList(hodStudentListDraft, {
+        regulation: hodStudentListEditor.regulation,
+        year: hodStudentListEditor.year,
+        semester: hodStudentListEditor.semester || evalUploadFilters.semester,
+        section: hodStudentListEditor.section,
+        branch: hodStudentListEditor.branch || evalUploadFilters.branch,
+      });
+      setEvalUploadSuccess(`Saved ${data?.count || hodStudentListDraft.length} students successfully.`);
+      setHodStudentListEditor(null);
+      setHodStudentListDraft([]);
+      setEvalUploadFile(null);
+    } catch (e: any) {
+      setEvalUploadError(e?.message || 'Failed to save student list');
+    } finally {
+      setHodStudentListSaving(false);
+    }
+  };
+
+  const deleteHodStudentList = async (list: EvalStudentListSummary) => {
+    if (!user || user.role !== 'HOD') return;
+    if (!window.confirm('Are you sure you want to delete this student list?')) return;
+    setEvalUploadError(null);
+    setEvalUploadSuccess(null);
+    setHodStudentListsLoading(true);
+    try {
+      const res = await fetch('/api/eval/student-lists', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hod_faculty_id: user.faculty_id,
+          department: list.department,
+          branch: list.branch,
+          regulation: list.regulation,
+          year: list.year,
+          semester: list.semester,
+          section: list.section,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to delete student list');
+      setEvalUploadSuccess('Student list deleted.');
+      if (hodStudentListEditor?.id === list.id) {
+        setHodStudentListEditor(null);
+        setHodStudentListDraft([]);
+      }
+      await fetchHodStudentLists();
+    } catch (e: any) {
+      setEvalUploadError(e?.message || 'Failed to delete student list');
+    } finally {
+      setHodStudentListsLoading(false);
     }
   };
 
@@ -2456,6 +2623,55 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    if (view !== 'evaluation' || !user || user.role !== 'HOD') return;
+    fetchHodStudentLists();
+  }, [view, user?.faculty_id, user?.role]);
+
+  useEffect(() => {
+    if (view !== 'evaluation' || !user || user.role !== 'FACULTY') return;
+    if (!evalFilters.regulation || !evalFilters.year || !evalFilters.section || (user.department === 'H&S' && !evalFilters.branch)) {
+      setEvalListAvailability({ checking: false, exists: false, message: null });
+      return;
+    }
+
+    let cancelled = false;
+    setEvalListAvailability({ checking: true, exists: false, message: null });
+
+    const qs = new URLSearchParams({
+      department: user.department,
+      regulation: evalFilters.regulation,
+      year: evalFilters.year,
+      section: evalFilters.section,
+      ...(user.department === 'H&S' ? { branch: evalFilters.branch } : {}),
+    });
+
+    fetch(`/api/eval/student-lists/availability?${qs.toString()}`)
+      .then((res) => res.json().catch(() => ({})).then((data) => ({ ok: res.ok, data })))
+      .then(({ ok, data }) => {
+        if (cancelled) return;
+        if (!ok) throw new Error(data?.error || 'Failed to verify student list');
+        const exists = Boolean(data?.exists);
+        setEvalListAvailability({
+          checking: false,
+          exists,
+          message: exists ? null : 'Evaluation is disabled until the HOD uploads the student list for the selected class.',
+        });
+      })
+      .catch((e: any) => {
+        if (cancelled) return;
+        setEvalListAvailability({
+          checking: false,
+          exists: false,
+          message: e?.message || 'Failed to verify student list availability.',
+        });
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [view, user?.faculty_id, user?.role, user?.department, evalFilters.regulation, evalFilters.year, evalFilters.section, evalFilters.branch]);
+
   const handleSaveProfile = async () => {
     if (!user) return;
     const name = profileForm.name.trim();
@@ -2595,6 +2811,19 @@ export default function App() {
       const data = await res.json();
       setSelectedPaper(data);
       setView('edit-paper');
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const withPaperDetails = async (paperId: number, action: (paper: QuestionPaper) => void) => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/papers/${paperId}`);
+      const data = await res.json();
+      action(data);
     } catch (err) {
       console.error(err);
     } finally {
@@ -3067,6 +3296,82 @@ export default function App() {
                                   }}>
                                     <XCircle size={14} />
                                     Reject
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+
+              {user?.role === 'HOD' && (
+                <div className="bg-white rounded-2xl border border-primary/10 shadow-sm overflow-hidden">
+                  <div className="px-6 py-4 border-b border-primary/10 flex items-center justify-between bg-primary-light/20">
+                    <h3 className="font-bold text-black flex items-center gap-2">
+                      <FileText className="text-primary" size={20} />
+                      Approved Question Papers
+                    </h3>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                      <thead>
+                        <tr className="bg-primary-light/10 text-primary/60 text-xs uppercase tracking-wider font-semibold">
+                          <th className="px-6 py-4">Faculty Name</th>
+                          <th className="px-6 py-4">Subject Name</th>
+                          <th className="px-6 py-4">Subject Code</th>
+                          <th className="px-6 py-4">Department</th>
+                          <th className="px-6 py-4">Regulation</th>
+                          <th className="px-6 py-4">Year</th>
+                          <th className="px-6 py-4">Semester</th>
+                          <th className="px-6 py-4">Mid Type</th>
+                          <th className="px-6 py-4">Approved Date</th>
+                          <th className="px-6 py-4 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-primary/5">
+                        {papers.filter((paper) => paper.status === 'Approved').length === 0 ? (
+                          <tr>
+                            <td colSpan={10} className="px-6 py-8 text-center text-primary/40 text-sm italic">
+                              No approved question papers available.
+                            </td>
+                          </tr>
+                        ) : (
+                          papers.filter((paper) => paper.status === 'Approved').map((paper) => (
+                            <tr key={paper.id} className="hover:bg-primary-light/10">
+                              <td className="px-6 py-4 text-sm text-black/80">{paper.faculty_name || paper.faculty_id}</td>
+                              <td className="px-6 py-4 text-sm text-black/80">{paper.subject_name}</td>
+                              <td className="px-6 py-4 text-sm text-black/80">{paper.subject_code}</td>
+                              <td className="px-6 py-4 text-sm text-black/80">{paper.department}{paper.branch ? ` (${paper.branch})` : ''}</td>
+                              <td className="px-6 py-4 text-sm text-black/80">{paper.regulation}</td>
+                              <td className="px-6 py-4 text-sm text-black/80">{paper.year}</td>
+                              <td className="px-6 py-4 text-sm text-black/80">{paper.semester}</td>
+                              <td className="px-6 py-4 text-sm text-black/80">{paper.mid_exam_type}</td>
+                              <td className="px-6 py-4 text-sm text-black/60">{paper.created_at ? new Date(paper.created_at).toLocaleString() : '-'}</td>
+                              <td className="px-6 py-4">
+                                <div className="flex justify-end gap-2">
+                                  <Button variant="ghost" size="sm" onClick={() => handleViewPaper(paper.id)}>
+                                    View
+                                  </Button>
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={() => withPaperDetails(paper.id, (fullPaper) => handleDownloadTemplate(fullPaper, 'Set 1'))}
+                                  >
+                                    Download
+                                  </Button>
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    onClick={() => withPaperDetails(paper.id, (fullPaper) => openOfficialPaper(fullPaper, 'Set 1', true))}
+                                  >
+                                    Print
+                                  </Button>
+                                  <Button variant="secondary" size="sm" onClick={() => handleEditPaper(paper.id)}>
+                                    Edit
                                   </Button>
                                 </div>
                               </td>
@@ -4431,7 +4736,7 @@ export default function App() {
               {user.role === 'HOD' && (
                 <div className="bg-white p-8 rounded-2xl border border-primary/10 shadow-sm space-y-6">
                   <h3 className="text-lg font-bold text-black">HOD: Upload Student List</h3>
-                  <div className={`grid grid-cols-1 gap-4 ${user.department === 'H&S' ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
+                  <div className={`grid grid-cols-1 gap-4 ${user.department === 'H&S' ? 'md:grid-cols-6' : 'md:grid-cols-5'}`}>
                     <Select
                       label="Regulation"
                       value={evalUploadFilters.regulation}
@@ -4474,6 +4779,16 @@ export default function App() {
                         ]}
                       />
                     )}
+
+                    <Select
+                      label="Semester"
+                      value={evalUploadFilters.semester}
+                      onChange={(e: any) => setEvalUploadFilters((p) => ({ ...p, semester: e.target.value }))}
+                      options={[
+                        { value: 'I', label: 'Semester I' },
+                        { value: 'II', label: 'Semester II' },
+                      ]}
+                    />
                     <Select
                       label="Section"
                       value={evalUploadFilters.section}
@@ -4503,9 +4818,156 @@ export default function App() {
                     <div className="flex justify-end">
                       <Button onClick={handleHodUploadStudentList} disabled={evalLoading}>
                         <Upload size={18} />
-                        {evalLoading ? 'Uploading...' : 'Upload List'}
+                        {evalLoading ? 'Uploading...' : hodStudentListEditor ? 'Replace List' : 'Upload List'}
                       </Button>
                     </div>
+                  </div>
+
+                  {hodStudentListEditor && (
+                    <div className="rounded-xl border border-primary/10 bg-primary-light/10 p-5 space-y-4">
+                      <div className="flex items-center justify-between gap-4">
+                        <div>
+                          <h4 className="font-semibold text-black">Edit Student List</h4>
+                          <p className="text-sm text-primary/60">
+                            {hodStudentListEditor.regulation} • {hodStudentListEditor.year} • {hodStudentListEditor.semester || '-'} • {hodStudentListEditor.branch ? `Branch ${hodStudentListEditor.branch} • ` : ''}Sec {hodStudentListEditor.section}
+                          </p>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button variant="secondary" onClick={() => {
+                            setHodStudentListEditor(null);
+                            setHodStudentListDraft([]);
+                            setEvalUploadFile(null);
+                          }}>
+                            Cancel
+                          </Button>
+                          <Button onClick={saveEditedHodStudentList} disabled={hodStudentListSaving}>
+                            <Save size={16} />
+                            {hodStudentListSaving ? 'Saving...' : 'Save Changes'}
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="overflow-x-auto rounded-xl border border-primary/10 bg-white">
+                        <table className="w-full text-left">
+                          <thead>
+                            <tr className="bg-primary-light/20 text-primary/70 text-xs uppercase tracking-wider font-semibold">
+                              <th className="px-4 py-3">Roll Number</th>
+                              <th className="px-4 py-3">Student Name</th>
+                              <th className="px-4 py-3 text-right">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-primary/5">
+                            {hodStudentListDraft.length === 0 ? (
+                              <tr>
+                                <td colSpan={3} className="px-4 py-6 text-center text-primary/40 text-sm">
+                                  No students in this list.
+                                </td>
+                              </tr>
+                            ) : (
+                              hodStudentListDraft.map((student, index) => (
+                                <tr key={`${student.roll_number}-${index}`} className="hover:bg-primary-light/10">
+                                  <td className="px-4 py-3">
+                                    <input
+                                      value={student.roll_number}
+                                      onChange={(e) => setHodStudentListDraft((prev) => prev.map((row, rowIndex) => rowIndex === index ? { ...row, roll_number: e.target.value } : row))}
+                                      className="w-full rounded-lg border border-primary/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                                    />
+                                  </td>
+                                  <td className="px-4 py-3">
+                                    <input
+                                      value={student.student_name}
+                                      onChange={(e) => setHodStudentListDraft((prev) => prev.map((row, rowIndex) => rowIndex === index ? { ...row, student_name: e.target.value } : row))}
+                                      className="w-full rounded-lg border border-primary/10 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/20"
+                                    />
+                                  </td>
+                                  <td className="px-4 py-3 text-right">
+                                    <Button
+                                      variant="danger"
+                                      className="ml-auto"
+                                      onClick={() => setHodStudentListDraft((prev) => prev.filter((_, rowIndex) => rowIndex !== index))}
+                                    >
+                                      Delete
+                                    </Button>
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div className="flex justify-between gap-3">
+                        <Button
+                          variant="secondary"
+                          onClick={() => setHodStudentListDraft((prev) => [...prev, { roll_number: '', student_name: '' }])}
+                        >
+                          <Plus size={16} />
+                          Add Student
+                        </Button>
+                        <div className="text-sm text-primary/60">
+                          You can replace this list with a new CSV/XLSX upload above, or edit rows here and save.
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {user.role === 'HOD' && (
+                <div className="bg-white rounded-2xl border border-primary/10 shadow-sm overflow-hidden">
+                  <div className="px-6 py-4 border-b border-primary/10 bg-primary-light/20 flex items-center justify-between">
+                    <div>
+                      <h3 className="font-bold text-black">Uploaded Student Lists</h3>
+                      <p className="text-sm text-primary/60">Manage uploaded lists before faculty evaluation starts.</p>
+                    </div>
+                    <Button variant="secondary" onClick={fetchHodStudentLists} disabled={hodStudentListsLoading}>
+                      {hodStudentListsLoading ? 'Loading...' : 'Refresh'}
+                    </Button>
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left">
+                      <thead>
+                        <tr className="bg-primary-light/10 text-primary/60 text-xs uppercase tracking-wider font-semibold">
+                          <th className="px-6 py-4">Regulation</th>
+                          <th className="px-6 py-4">Year</th>
+                          <th className="px-6 py-4">Semester</th>
+                          <th className="px-6 py-4">Section</th>
+                          <th className="px-6 py-4">File Name</th>
+                          <th className="px-6 py-4">Uploaded Date</th>
+                          <th className="px-6 py-4 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-primary/5">
+                        {hodStudentLists.length === 0 ? (
+                          <tr>
+                            <td colSpan={7} className="px-6 py-8 text-center text-primary/40 text-sm italic">
+                              No student lists uploaded yet.
+                            </td>
+                          </tr>
+                        ) : (
+                          hodStudentLists.map((list) => (
+                            <tr key={list.id} className="hover:bg-primary-light/10">
+                              <td className="px-6 py-4 text-sm text-black/80">{list.regulation}</td>
+                              <td className="px-6 py-4 text-sm text-black/80">{list.year}{list.branch ? ` (${list.branch})` : ''}</td>
+                              <td className="px-6 py-4 text-sm text-black/80">{list.semester || '-'}</td>
+                              <td className="px-6 py-4 text-sm text-black/80">{list.section}</td>
+                              <td className="px-6 py-4 text-sm text-black/80">{list.file_name}</td>
+                              <td className="px-6 py-4 text-sm text-black/60">{list.uploaded_at ? new Date(list.uploaded_at).toLocaleString() : '-'}</td>
+                              <td className="px-6 py-4">
+                                <div className="flex justify-end gap-2">
+                                  <Button variant="secondary" onClick={() => openHodStudentListEditor(list)}>
+                                    Edit
+                                  </Button>
+                                  <Button variant="danger" onClick={() => deleteHodStudentList(list)}>
+                                    Delete
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               )}
@@ -4588,6 +5050,12 @@ export default function App() {
               {user.role === 'FACULTY' && (
                 <div className="bg-white p-8 rounded-2xl border border-primary/10 shadow-sm space-y-6">
                   <h3 className="text-lg font-bold text-black">Faculty: Select Filters</h3>
+                  {evalListAvailability.message && (
+                    <div className={`p-3 text-sm rounded-lg flex items-center gap-2 border ${evalListAvailability.exists ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 'bg-amber-50 text-amber-700 border-amber-100'}`}>
+                      <AlertCircle size={16} />
+                      {evalListAvailability.message}
+                    </div>
+                  )}
                   {evalSubjectsError && (
                     <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2 border border-red-100">
                       <AlertCircle size={16} />
@@ -4708,8 +5176,8 @@ export default function App() {
                     />
                   </div>
                   <div className="flex justify-end">
-                    <Button onClick={loadEvaluationStudentList} disabled={evalLoading}>
-                      {evalLoading ? 'Loading...' : 'Load Student List'}
+                    <Button onClick={loadEvaluationStudentList} disabled={evalLoading || evalListAvailability.checking || !evalListAvailability.exists}>
+                      {evalLoading ? 'Loading...' : evalListAvailability.checking ? 'Checking...' : 'Load Student List'}
                     </Button>
                   </div>
                 </div>

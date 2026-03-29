@@ -3,6 +3,19 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { requireUserByFacultyId } from "./supabaseUtils.ts";
 
 type StudentRow = { roll_number: string; student_name: string };
+type StudentListSummary = {
+  id: string;
+  department: string;
+  branch: string;
+  regulation: string;
+  year: string;
+  semester: string;
+  section: string;
+  uploaded_by: string;
+  uploaded_at: string;
+  file_name: string;
+  count: number;
+};
 
 function normalizeYear(input: any) {
   return String(input || "").trim().toUpperCase();
@@ -13,6 +26,10 @@ function normalizeSection(input: any) {
 }
 
 function normalizeReg(input: any) {
+  return String(input || "").trim().toUpperCase();
+}
+
+function normalizeSemester(input: any) {
   return String(input || "").trim().toUpperCase();
 }
 
@@ -63,6 +80,58 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
     return hodDept === targetDept;
   }
 
+  function buildStudentListId(department: string, branch: string, regulation: string, year: string, semester: string, section: string) {
+    return `${department}:${branch}:${regulation}:${year}:${semester}:${section}`;
+  }
+
+  function buildStudentListFileName(list: { regulation: string; year: string; semester: string; section: string; branch: string }) {
+    const parts = ["students", list.regulation, list.year];
+    if (list.semester) parts.push(list.semester);
+    if (list.branch) parts.push(list.branch);
+    parts.push(list.section);
+    return `${parts.join("_")}.csv`;
+  }
+
+  function summarizeStudentLists(rows: any[]): StudentListSummary[] {
+    const grouped = new Map<string, StudentListSummary>();
+
+    for (const row of rows || []) {
+      const department = String(row.department || "").trim();
+      const branch = String(row.branch || "").trim().toUpperCase();
+      const regulation = normalizeReg(row.regulation);
+      const year = normalizeYear(row.year);
+      const semester = normalizeSemester(row.semester);
+      const section = normalizeSection(row.section);
+      const id = buildStudentListId(department, branch, regulation, year, semester, section);
+
+      const existing = grouped.get(id);
+      if (!existing) {
+        grouped.set(id, {
+          id,
+          department,
+          branch,
+          regulation,
+          year,
+          semester,
+          section,
+          uploaded_by: String(row.uploaded_by || "").trim(),
+          uploaded_at: String(row.uploaded_at || "").trim(),
+          file_name: buildStudentListFileName({ regulation, year, semester, section, branch }),
+          count: 1,
+        });
+        continue;
+      }
+
+      existing.count += 1;
+      if (String(row.uploaded_at || "") >= existing.uploaded_at) {
+        existing.uploaded_at = String(row.uploaded_at || "").trim();
+        existing.uploaded_by = String(row.uploaded_by || "").trim();
+      }
+    }
+
+    return Array.from(grouped.values()).sort((a, b) => String(b.uploaded_at || "").localeCompare(String(a.uploaded_at || "")));
+  }
+
   // HOD uploads a student list for their department (reg/year/section).
   router.post("/api/eval/student-lists", async (req, res) => {
     try {
@@ -72,6 +141,7 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       const branch = String(body.branch || "").trim().toUpperCase();
       const regulation = normalizeReg(body.regulation);
       const year = normalizeYear(body.year);
+      const semester = normalizeSemester(body.semester);
       const section = normalizeSection(body.section);
       const students = Array.isArray(body.students) ? (body.students as any[]) : [];
 
@@ -123,7 +193,7 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
         branch: effectiveBranch,
         regulation,
         year,
-        semester: "",
+        semester: semester || "",
         section,
         uploaded_by: hod_faculty_id,
         uploaded_at: uploadedAt,
@@ -134,7 +204,7 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
 
       res.json({
         success: true,
-        list_id: `${department}:${effectiveBranch}:${regulation}:${year}:${section}`,
+        list_id: buildStudentListId(department, effectiveBranch, regulation, year, semester || "", section),
         count: typeof count === "number" ? count : cleanStudents.length,
       });
     } catch (error: any) {
@@ -162,7 +232,7 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
 
       const { data: rows, error } = await supabase
         .from("students")
-        .select("roll_number,student_name,department,branch,regulation,year,section,uploaded_by,uploaded_at")
+        .select("roll_number,student_name,department,branch,regulation,year,semester,section,uploaded_by,uploaded_at")
         .eq("department", department)
         .eq("branch", effectiveBranch)
         .eq("regulation", regulation)
@@ -186,11 +256,12 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       res.json({
         success: true,
         list: {
-          id: `${department}:${effectiveBranch}:${regulation}:${year}:${section}`,
+          id: buildStudentListId(department, effectiveBranch, regulation, year, normalizeSemester(rows[0]?.semester), section),
           department,
           branch: effectiveBranch,
           regulation,
           year,
+          semester: normalizeSemester(rows[0]?.semester),
           section,
           uploaded_by,
           uploaded_at,
@@ -199,6 +270,105 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       });
     } catch (error: any) {
       console.error("Student list fetch error:", error);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  router.get("/api/eval/student-lists/manage", async (req, res) => {
+    try {
+      const hod_faculty_id = String(req.query.hod_faculty_id || "").trim();
+      if (!hod_faculty_id) return res.status(400).json({ error: "hod_faculty_id is required" });
+
+      const hodCheck = await requireUserByFacultyId(supabase, hod_faculty_id);
+      if (!hodCheck.ok) return res.status(hodCheck.status).json({ error: hodCheck.error });
+      const hod = hodCheck.user;
+      if (hod.role !== "HOD") return res.status(403).json({ error: "Only HOD can manage student lists" });
+
+      const { data: rows, error } = await supabase
+        .from("students")
+        .select("department,branch,regulation,year,semester,section,uploaded_by,uploaded_at")
+        .eq("department", String(hod.department || "").trim())
+        .order("uploaded_at", { ascending: false });
+
+      if (error) return res.status(400).json({ error: error.message });
+      res.json({ success: true, lists: summarizeStudentLists(rows || []) });
+    } catch (error: any) {
+      console.error("Student list management fetch error:", error);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  router.get("/api/eval/student-lists/availability", async (req, res) => {
+    try {
+      const department = String(req.query.department || "").trim();
+      const branch = String(req.query.branch || "").trim().toUpperCase();
+      const regulation = normalizeReg(req.query.regulation);
+      const year = normalizeYear(req.query.year);
+      const section = normalizeSection(req.query.section);
+
+      if (!department) return res.status(400).json({ error: "department is required" });
+      if (!regulation) return res.status(400).json({ error: "regulation is required" });
+      if (!year) return res.status(400).json({ error: "year is required" });
+      if (!section) return res.status(400).json({ error: "section is required" });
+
+      const effectiveBranch = department === "H&S" ? branch : "";
+      if (department === "H&S" && !effectiveBranch) return res.status(400).json({ error: "branch is required for H&S" });
+
+      const { count, error } = await supabase
+        .from("students")
+        .select("id", { head: true, count: "exact" })
+        .eq("department", department)
+        .eq("branch", effectiveBranch)
+        .eq("regulation", regulation)
+        .eq("year", year)
+        .eq("section", section);
+
+      if (error) return res.status(400).json({ error: error.message });
+      res.json({ success: true, exists: Number(count || 0) > 0, count: Number(count || 0) });
+    } catch (error: any) {
+      console.error("Student list availability error:", error);
+      res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  router.delete("/api/eval/student-lists", async (req, res) => {
+    try {
+      const body = (req.body || {}) as any;
+      const hod_faculty_id = String(body.hod_faculty_id || "").trim();
+      const department = String(body.department || "").trim();
+      const branch = String(body.branch || "").trim().toUpperCase();
+      const regulation = normalizeReg(body.regulation);
+      const year = normalizeYear(body.year);
+      const section = normalizeSection(body.section);
+
+      if (!hod_faculty_id) return res.status(400).json({ error: "hod_faculty_id is required" });
+      if (!department) return res.status(400).json({ error: "department is required" });
+      if (!regulation) return res.status(400).json({ error: "regulation is required" });
+      if (!year) return res.status(400).json({ error: "year is required" });
+      if (!section) return res.status(400).json({ error: "section is required" });
+
+      const hodCheck = await requireUserByFacultyId(supabase, hod_faculty_id);
+      if (!hodCheck.ok) return res.status(hodCheck.status).json({ error: hodCheck.error });
+      const hod = hodCheck.user;
+      if (hod.role !== "HOD") return res.status(403).json({ error: "Only HOD can delete student lists" });
+      if (!canHodAccessDepartment(String(hod.department || "").trim(), department)) return res.status(403).json({ error: "HOD department mismatch" });
+
+      const effectiveBranch = department === "H&S" ? branch : "";
+      if (department === "H&S" && !effectiveBranch) return res.status(400).json({ error: "branch is required for H&S" });
+
+      const { error, count } = await supabase
+        .from("students")
+        .delete({ count: "exact" })
+        .eq("department", department)
+        .eq("branch", effectiveBranch)
+        .eq("regulation", regulation)
+        .eq("year", year)
+        .eq("section", section);
+
+      if (error) return res.status(400).json({ error: error.message });
+      res.json({ success: true, deleted: Number(count || 0) });
+    } catch (error: any) {
+      console.error("Student list delete error:", error);
       res.status(500).json({ error: "Internal Server Error" });
     }
   });

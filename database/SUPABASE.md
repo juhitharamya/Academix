@@ -10,4 +10,5 @@ Notes
 - If you enable Row Level Security (RLS), you must add policies; otherwise the backend will not be able to read/write using the anon key.
 
 Troubleshooting
-- If you see: `Could not find the table 'public.faculty_subjects' in the schema cache`, it means the table doesn't exist in your Supabase project yet (or PostgREST hasn't refreshed its schema cache). Re-run `database/supabase-schema.sql` in Supabase SQL Editor and wait ~30–60 seconds, then retry.
+- If you see: `Could not find the table 'public.faculty_subjects' in the schema cache`, it means the table doesn't exist in your Supabase project yet (or PostgREST hasn't refreshed its schema cache). Re-run `database/supabase-schema.sql` in Supabase SQL Editor and wait ~30-60 seconds, then retry.
+- If you see: `column faculty_subjects.branch does not exist`, your Supabase table was created before the `branch` column was added. Run `database/migrations/2026-03-25-add-branch-to-faculty-subjects.sql` in Supabase SQL Editor, then wait ~30-60 seconds and retry.
