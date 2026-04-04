@@ -382,12 +382,14 @@ function QuestionPaperForm({
   user,
   paper,
   assignedSubjects,
+  assignedSubjectsLoading,
   onCancel,
   onSuccess,
 }: {
   user: User;
   paper?: QuestionPaper;
   assignedSubjects: FacultySubjectAssignment[];
+  assignedSubjectsLoading: boolean;
   onCancel: () => void;
   onSuccess: () => void;
 }) {
@@ -417,14 +419,51 @@ function QuestionPaperForm({
   }, [formData.department, formData.year]);
 
   useEffect(() => {
-    const useAssigned = user.role === 'FACULTY' && Array.isArray(assignedSubjects) && assignedSubjects.length > 0;
+    if (user.role !== 'FACULTY') return;
+    if (!Array.isArray(assignedSubjects) || assignedSubjects.length === 0) return;
+    if (paper) return;
 
-      if (useAssigned) {
-        const reg = String(formData.regulation || '').trim().toUpperCase();
-        const dept = String(formData.department || '').trim();
-        const sem = String(formData.semester || '').trim();
-        const yr = String(formData.year || '').trim().toUpperCase();
-        const br = String(formData.branch || '').trim().toUpperCase();
+    const fallback = assignedSubjects[0];
+    if (!fallback) return;
+
+    const hasAnyPrimaryFilter =
+      Boolean(String(formData.department || '').trim()) ||
+      Boolean(String(formData.regulation || '').trim()) ||
+      Boolean(String(formData.year || '').trim()) ||
+      Boolean(String(formData.semester || '').trim()) ||
+      Boolean(String(formData.branch || '').trim());
+
+    if (hasAnyPrimaryFilter) return;
+
+    setFormData((prev) => ({
+      ...prev,
+      department: fallback.department || prev.department,
+      branch: String(fallback.department || '').trim() === 'H&S' ? String(fallback.branch || '').trim().toUpperCase() : '',
+      regulation: fallback.regulation || prev.regulation,
+      year: fallback.year || prev.year,
+      semester: fallback.semester || prev.semester,
+      subject_name: '',
+      subject_code: '',
+    }));
+  }, [user.role, assignedSubjects, paper, formData.department, formData.branch, formData.regulation, formData.year, formData.semester]);
+
+  useEffect(() => {
+    if (user.role === 'FACULTY' && assignedSubjectsLoading) {
+      setSubjects([]);
+      return;
+    }
+
+    if (user.role === 'FACULTY') {
+      const reg = String(formData.regulation || '').trim().toUpperCase();
+      const dept = String(formData.department || '').trim();
+      const sem = String(formData.semester || '').trim();
+      const yr = String(formData.year || '').trim().toUpperCase();
+      const br = String(formData.branch || '').trim().toUpperCase();
+
+      if (!Array.isArray(assignedSubjects) || assignedSubjects.length === 0) {
+        setSubjects([]);
+        return;
+      }
 
       if (!reg || !dept || !sem || (dept === 'H&S' ? !formData.branch : !yr)) {
         setSubjects([]);
@@ -448,6 +487,7 @@ function QuestionPaperForm({
         id: idx + 1,
         regulation: a.regulation,
         department: a.department,
+        branch: a.branch,
         year: a.year,
         semester: a.semester,
         subject_name: a.subject_name,
@@ -489,7 +529,7 @@ function QuestionPaperForm({
     } else {
       setSubjects([]);
     }
-  }, [user.role, assignedSubjects, formData.regulation, formData.department, formData.branch, formData.year, formData.semester]);
+  }, [user.role, assignedSubjects, assignedSubjectsLoading, formData.regulation, formData.department, formData.branch, formData.year, formData.semester]);
 
   const handleSubjectChange = (subjectName: string) => {
     const selectedSubject = subjects.find(s => s.subject_name === subjectName);
@@ -763,7 +803,11 @@ function QuestionPaperForm({
                       ? 'Select filters first'
                       : subjects.length
                         ? 'Select Subject'
-                        : 'No subjects available',
+                        : assignedSubjectsLoading
+                          ? 'Loading subjects...'
+                          : assignedSubjects.length
+                          ? 'No allocated subjects for selected filters'
+                          : 'No subjects available',
                   value: '',
                 },
                 ...subjects.map(s => ({ label: s.subject_name, value: s.subject_name }))
@@ -1049,6 +1093,7 @@ export default function App() {
   const [adminDataError, setAdminDataError] = useState<string | null>(null);
 
   const [assignedSubjects, setAssignedSubjects] = useState<FacultySubjectAssignment[]>([]);
+  const [assignedSubjectsLoading, setAssignedSubjectsLoading] = useState(false);
 
   const [adminAssignments, setAdminAssignments] = useState<FacultySubjectAssignment[]>([]);
   const [adminAssignmentsLoading, setAdminAssignmentsLoading] = useState(false);
@@ -1157,6 +1202,7 @@ type EvalStudentListSummary = {
   });
 
   const [evalFilters, setEvalFilters] = useState({
+    department: '',
     regulation: 'R22',
     year: 'II',
     semester: 'I',
@@ -1169,14 +1215,16 @@ type EvalStudentListSummary = {
   const [evalList, setEvalList] = useState<EvalStudentList | null>(null);
   const [evalLoading, setEvalLoading] = useState(false);
   const [evalError, setEvalError] = useState<string | null>(null);
-  const [evalStep, setEvalStep] = useState<'descriptive' | 'objective'>('descriptive');
+  const [evalStep, setEvalStep] = useState<'descriptive' | 'objective' | 'assignment'>('descriptive');
   const evalDescCoFallback = ['CO1', 'CO2', 'CO2', 'CO3', 'CO4', 'CO5'];
   const evalObjCoFallback = ['CO1', 'CO1', 'CO2', 'CO2', 'CO3', 'CO3', 'CO4', 'CO4', 'CO5', 'CO5'];
+  const evalAssignmentCoFallback = ['CO1', 'CO2', 'CO3', 'CO4', 'CO5'];
 
   const [evalCoLabels, setEvalCoLabels] = useState<string[]>(evalDescCoFallback);
   const [evalObjCoLabelsMcq, setEvalObjCoLabelsMcq] = useState<string[]>(evalObjCoFallback);
   const [evalObjCoLabelsFb, setEvalObjCoLabelsFb] = useState<string[]>(evalObjCoFallback);
-  const [evalMarks, setEvalMarks] = useState<Record<string, { descriptive: (number | null)[]; mcq: (number | null)[]; fb: (number | null)[] }>>({});
+  const [evalAssignmentCoLabels, setEvalAssignmentCoLabels] = useState<string[]>(evalAssignmentCoFallback);
+  const [evalMarks, setEvalMarks] = useState<Record<string, { descriptive: (number | null)[]; mcq: (number | null)[]; fb: (number | null)[]; assignment: (number | null)[] }>>({});
   const [evalDescriptiveErrors, setEvalDescriptiveErrors] = useState<Record<string, string>>({});
   const [evalSubmitted, setEvalSubmitted] = useState(false);
   const [evalActiveFacultyId, setEvalActiveFacultyId] = useState<string>('');
@@ -1198,6 +1246,21 @@ type EvalStudentListSummary = {
     return parsed > 0 ? 0.5 : 0;
   };
 
+  const normalizeAssignmentMark = (value: number | string | null | undefined) => {
+    if (value === null || value === undefined || value === '') return null;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return null;
+    if (parsed < 0 || parsed > 1) return null;
+    return parsed >= 1 ? 1 : 0;
+  };
+
+  const makeEmptyEvalMarks = () => ({
+    descriptive: Array(6).fill(null) as (number | null)[],
+    mcq: Array(10).fill(null) as (number | null)[],
+    fb: Array(10).fill(null) as (number | null)[],
+    assignment: Array(5).fill(null) as (number | null)[],
+  });
+
   const getBestDescriptiveResult = (values: Array<number | null | undefined>) => {
     const ranked = (values || [])
       .map((value, index) => ({
@@ -1217,18 +1280,25 @@ type EvalStudentListSummary = {
   const getObjectiveTotal = (values: Array<number | null | undefined>) =>
     (values || []).reduce((sum, value) => sum + (normalizeObjectiveMark(value) ?? 0), 0);
 
-  const getEvaluationTotals = (marks?: { descriptive: (number | null)[]; mcq: (number | null)[]; fb: (number | null)[] }) => {
-    const current = marks || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
+  const getAssignmentTotal = (values: Array<number | null | undefined>) =>
+    (values || []).reduce((sum, value) => sum + (normalizeAssignmentMark(value) ?? 0), 0);
+
+  const getEvaluationTotals = (marks?: { descriptive: (number | null)[]; mcq: (number | null)[]; fb: (number | null)[]; assignment: (number | null)[] }) => {
+    const current = marks || makeEmptyEvalMarks();
     const descriptive = getBestDescriptiveResult(current.descriptive);
     const mcq = getObjectiveTotal(current.mcq);
     const fb = getObjectiveTotal(current.fb);
+    const assignment = getAssignmentTotal(current.assignment);
+    const objective = mcq + fb;
 
     return {
       descriptiveTotal: descriptive.total,
       descriptiveSelectedIndices: descriptive.selectedIndices,
       mcqTotal: mcq,
       fbTotal: fb,
-      finalTotal: descriptive.total + mcq + fb,
+      objectiveTotal: objective,
+      assignmentTotal: assignment,
+      finalTotal: descriptive.total + objective + assignment,
     };
   };
 
@@ -1236,17 +1306,65 @@ type EvalStudentListSummary = {
   const [evalSubjects, setEvalSubjects] = useState<Subject[]>([]);
   const [evalSubjectsLoading, setEvalSubjectsLoading] = useState(false);
   const [evalSubjectsError, setEvalSubjectsError] = useState<string | null>(null);
+  const evalDepartment = String(evalFilters.department || user?.department || '').trim();
+  const evalDepartmentIsHS = evalDepartment === 'H&S';
+  const evalDepartmentOptions = useMemo(() => {
+    const unique = Array.from(new Set((assignedSubjects || []).map((a) => String(a.department || '').trim()).filter(Boolean)));
+    if (user?.role === 'FACULTY' && unique.length) return unique;
+    return Array.from(new Set([String(user?.department || '').trim()].filter(Boolean)));
+  }, [assignedSubjects, user?.department, user?.role]);
+  const evalBranchOptions = useMemo(() => {
+    const branches = (assignedSubjects || [])
+      .filter((a) =>
+        String(a.department || '').trim() === evalDepartment &&
+        String(a.regulation || '').trim().toUpperCase() === String(evalFilters.regulation || '').trim().toUpperCase() &&
+        String(a.year || '').trim().toUpperCase() === String(evalFilters.year || '').trim().toUpperCase() &&
+        String(a.semester || '').trim() === String(evalFilters.semester || '').trim(),
+      )
+      .map((a) => String(a.branch || '').trim().toUpperCase())
+      .filter(Boolean);
+    return Array.from(new Set(branches));
+  }, [assignedSubjects, evalDepartment, evalFilters.regulation, evalFilters.year, evalFilters.semester]);
+
+  useEffect(() => {
+    if (!user || user.role !== 'FACULTY') return;
+    if (!assignedSubjects.length) return;
+
+    const fallback = assignedSubjects[0];
+    if (!fallback) return;
+
+    const hasAnyPrimaryFilter =
+      Boolean(String(evalFilters.department || '').trim()) ||
+      Boolean(String(evalFilters.regulation || '').trim()) ||
+      Boolean(String(evalFilters.year || '').trim()) ||
+      Boolean(String(evalFilters.semester || '').trim()) ||
+      Boolean(String(evalFilters.branch || '').trim());
+
+    if (hasAnyPrimaryFilter) return;
+
+    setEvalFilters((prev) => ({
+      ...prev,
+      department: fallback.department || prev.department,
+      regulation: fallback.regulation || prev.regulation,
+      year: fallback.year || prev.year,
+      semester: fallback.semester || prev.semester,
+      branch: String(fallback.department || '').trim() === 'H&S' ? String(fallback.branch || '').trim().toUpperCase() : '',
+      subject_name: '',
+      subject_code: '',
+    }));
+  }, [user, assignedSubjects, evalDepartment, evalFilters.regulation, evalFilters.year, evalFilters.semester, evalFilters.branch]);
 
   useEffect(() => {
     if (!evalStudentsSorted.length) return;
     for (const student of evalStudentsSorted) {
-      const marks = evalMarks[student.roll_number] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
+      const marks = evalMarks[student.roll_number] || makeEmptyEvalMarks();
       const totals = getEvaluationTotals(marks);
       console.debug('[EvaluationTotals]', {
         roll_number: student.roll_number,
         descriptive_total: totals.descriptiveTotal,
         objective_part1_total: totals.mcqTotal,
         objective_part2_total: totals.fbTotal,
+        assignment_total: totals.assignmentTotal,
         final_total: totals.finalTotal,
       });
     }
@@ -1255,18 +1373,22 @@ type EvalStudentListSummary = {
   useEffect(() => {
     const fetchEvalSubjects = async () => {
       if (!user) return;
+      if (user.role === 'FACULTY' && assignedSubjectsLoading) {
+        setEvalSubjects([]);
+        return;
+      }
       setEvalSubjectsLoading(true);
       setEvalSubjectsError(null);
 
       try {
-        if (user.role === 'FACULTY' && assignedSubjects.length) {
+        if (user.role === 'FACULTY') {
           const reg = String(evalFilters.regulation || '').trim().toUpperCase();
           const sem = normalizeAcademicSemester(evalFilters.semester || '');
           const yr = normalizeAcademicYear(evalFilters.year || '');
-          const dept = normalizeAcademicDepartment(user.department || '');
+          const dept = normalizeAcademicDepartment(evalDepartment || user.department || '');
           const br = String(evalFilters.branch || '').trim().toUpperCase();
 
-          if (!reg || !sem || !yr) {
+          if (!assignedSubjects.length || !reg || !sem || !yr) {
             setEvalSubjects([]);
             return;
           }
@@ -1288,6 +1410,7 @@ type EvalStudentListSummary = {
             id: idx + 1,
             regulation: a.regulation,
             department: a.department,
+            branch: a.branch,
             year: a.year,
             semester: a.semester,
             subject_name: a.subject_name,
@@ -1301,10 +1424,10 @@ type EvalStudentListSummary = {
         const params = new URLSearchParams({
           regulation: evalFilters.regulation,
           semester: evalFilters.semester,
-          department: user.department,
+          department: evalDepartment || user.department,
         });
 
-        if (user.department === 'H&S') {
+        if (evalDepartment === 'H&S') {
           if (!evalFilters.branch) {
             setEvalSubjects([]);
             return;
@@ -1336,7 +1459,7 @@ type EvalStudentListSummary = {
       return;
     }
 
-    if (user?.department === 'H&S') {
+    if (evalDepartment === 'H&S') {
       if (!evalFilters.branch) setEvalSubjects([]);
       else fetchEvalSubjects();
       return;
@@ -1344,7 +1467,7 @@ type EvalStudentListSummary = {
 
     if (!evalFilters.year) setEvalSubjects([]);
     else fetchEvalSubjects();
-  }, [user, assignedSubjects, evalFilters.regulation, evalFilters.year, evalFilters.semester, evalFilters.branch]);
+  }, [user, assignedSubjects, assignedSubjectsLoading, evalDepartment, evalFilters.regulation, evalFilters.year, evalFilters.semester, evalFilters.branch]);
 
   // Auto-load CO labels from the approved Question Paper for the selected subject code.
   useEffect(() => {
@@ -1355,15 +1478,16 @@ type EvalStudentListSummary = {
         setEvalCoLabels(evalDescCoFallback);
         setEvalObjCoLabelsMcq(evalObjCoFallback);
         setEvalObjCoLabelsFb(evalObjCoFallback);
+        setEvalAssignmentCoLabels(evalAssignmentCoFallback);
         return;
       }
 
-      if (user.department !== 'H&S' && !evalFilters.year) return;
-      if (user.department === 'H&S' && !evalFilters.branch) return;
+      if (evalDepartment !== 'H&S' && !evalFilters.year) return;
+      if (evalDepartment === 'H&S' && !evalFilters.branch) return;
 
       try {
         const params = new URLSearchParams({
-          department: user.department,
+          department: evalDepartment || user.department,
           regulation: evalFilters.regulation,
           semester: evalFilters.semester,
           mid_exam_type: evalFilters.mid_type,
@@ -1372,7 +1496,7 @@ type EvalStudentListSummary = {
         });
         params.set('actor_faculty_id', user.faculty_id);
 
-        if (user.department === 'H&S') {
+        if (evalDepartment === 'H&S') {
           params.append('branch', evalFilters.branch);
           params.append('year', 'I');
         } else {
@@ -1388,6 +1512,7 @@ type EvalStudentListSummary = {
           setEvalCoLabels(evalDescCoFallback);
           setEvalObjCoLabelsMcq(evalObjCoFallback);
           setEvalObjCoLabelsFb(evalObjCoFallback);
+          setEvalAssignmentCoLabels(evalAssignmentCoFallback);
           return;
         }
 
@@ -1404,15 +1529,17 @@ type EvalStudentListSummary = {
         setEvalCoLabels(Array.from({ length: 6 }, (_, i) => desc[i]?.co_level || evalDescCoFallback[i] || `CO${i + 1}`));
         setEvalObjCoLabelsMcq(Array.from({ length: 10 }, (_, i) => mcq[i]?.co_level || evalObjCoFallback[i] || `CO${Math.min(i + 1, 5)}`));
         setEvalObjCoLabelsFb(Array.from({ length: 10 }, (_, i) => fb[i]?.co_level || evalObjCoFallback[i] || `CO${Math.min(i + 1, 5)}`));
+        setEvalAssignmentCoLabels(evalAssignmentCoFallback);
       } catch {
         setEvalCoLabels(evalDescCoFallback);
         setEvalObjCoLabelsMcq(evalObjCoFallback);
         setEvalObjCoLabelsFb(evalObjCoFallback);
+        setEvalAssignmentCoLabels(evalAssignmentCoFallback);
       }
     };
 
     loadCoFromPaper();
-  }, [user, evalFilters.subject_code, evalFilters.regulation, evalFilters.year, evalFilters.semester, evalFilters.branch, evalFilters.mid_type]);
+  }, [user, evalDepartment, evalFilters.subject_code, evalFilters.regulation, evalFilters.year, evalFilters.semester, evalFilters.branch, evalFilters.mid_type]);
 
   // Fetch Papers
   const fetchPapers = async () => {
@@ -1816,14 +1943,19 @@ type EvalStudentListSummary = {
     if (!user) return;
     if (view !== 'evaluation') return;
 
-    if (user.department === 'H&S') {
+    setEvalFilters((p) => ({
+      ...p,
+      department: p.department || user.department || '',
+    }));
+
+    if ((evalFilters.department || user.department) === 'H&S') {
       setEvalUploadFilters((p) => ({ ...p, year: 'I' }));
       setEvalFilters((p) => ({ ...p, year: 'I' }));
     } else {
       setEvalUploadFilters((p) => ({ ...p, year: p.year === 'I' ? 'II' : p.year }));
       setEvalFilters((p) => ({ ...p, year: p.year === 'I' ? 'II' : p.year }));
     }
-  }, [view, user?.department]);
+  }, [view, user?.department, evalFilters.department]);
 
   useEffect(() => {
     if (!user) return;
@@ -1920,6 +2052,7 @@ type EvalStudentListSummary = {
   useEffect(() => {
     const loadAssignedSubjects = async () => {
       if (!user || user.role !== 'FACULTY') return;
+      setAssignedSubjectsLoading(true);
       try {
         const res = await apiFetch('/api/faculty/subjects');
         const data = await res.json().catch(() => ({}));
@@ -1927,11 +2060,14 @@ type EvalStudentListSummary = {
         setAssignedSubjects(Array.isArray(data?.assignments) ? data.assignments : []);
       } catch {
         setAssignedSubjects([]);
+      } finally {
+        setAssignedSubjectsLoading(false);
       }
     };
 
     if (!user || !authToken) {
       setAssignedSubjects([]);
+      setAssignedSubjectsLoading(false);
       return;
     }
     loadAssignedSubjects();
@@ -2217,11 +2353,12 @@ type EvalStudentListSummary = {
     setEvalUploadError(null);
     setEvalUploadSuccess(null);
     setHodStudentListSaving(true);
+    const effectiveSemester = list.semester || evalUploadFilters.semester || 'I';
     try {
       setEvalUploadFilters({
         regulation: list.regulation,
         year: list.year,
-        semester: list.semester || 'I',
+        semester: effectiveSemester,
         section: list.section,
         branch: list.branch || 'CSE',
       });
@@ -2229,6 +2366,7 @@ type EvalStudentListSummary = {
         department: list.department,
         regulation: list.regulation,
         year: list.year,
+        semester: effectiveSemester,
         section: list.section,
         ...(list.branch ? { branch: list.branch } : {}),
       });
@@ -2316,11 +2454,14 @@ type EvalStudentListSummary = {
 
     setEvalLoading(true);
     try {
+      const activeDepartment = String(filters.department || user.department || '').trim();
+      const activeIsHS = activeDepartment === 'H&S';
       const qs = new URLSearchParams({
-        department: user.department,
-        ...(user.department === 'H&S' ? { branch: filters.branch } : {}),
+        department: activeDepartment,
+        ...(activeIsHS ? { branch: filters.branch } : {}),
         regulation: filters.regulation,
         year: filters.year,
+        semester: filters.semester,
         section: filters.section,
       });
       const res = await fetch(`/api/eval/student-lists?${qs.toString()}`);
@@ -2332,10 +2473,11 @@ type EvalStudentListSummary = {
       if (filters.subject_code) {
         try {
           const paperQs = new URLSearchParams({
-            department: user.department,
-            ...(user.department === 'H&S' ? { branch: filters.branch } : {}),
+            department: activeDepartment,
+            ...(activeIsHS ? { branch: filters.branch } : {}),
             regulation: filters.regulation,
             year: filters.year,
+            semester: filters.semester,
             mid_exam_type: filters.mid_type,
             subject_code: filters.subject_code,
             status: 'Approved',
@@ -2357,10 +2499,11 @@ type EvalStudentListSummary = {
       // Load previously saved marks (if any).
       if (filters.mid_type && filters.subject_code) {
         const mQs = new URLSearchParams({
-          department: user.department,
-          ...(user.department === 'H&S' ? { branch: filters.branch } : {}),
+          department: activeDepartment,
+          ...(activeIsHS ? { branch: filters.branch } : {}),
           regulation: filters.regulation,
           year: filters.year,
+          semester: filters.semester,
           section: filters.section,
           mid_type: filters.mid_type,
           subject_code: filters.subject_code,
@@ -2368,7 +2511,12 @@ type EvalStudentListSummary = {
         const mRes = await fetch(`/api/eval/marks?${mQs.toString()}`);
         const mData = await mRes.json().catch(() => ({}));
         if (mRes.ok && Array.isArray(mData?.marks)) {
-          const next: Record<string, { descriptive: (number | null)[]; mcq: (number | null)[]; fb: (number | null)[] }> = {};
+          const next: Record<string, { descriptive: (number | null)[]; mcq: (number | null)[]; fb: (number | null)[]; assignment: (number | null)[] }> = {};
+          if (mData?.assignment_co_map && typeof mData.assignment_co_map === 'object') {
+            setEvalAssignmentCoLabels(
+              Array.from({ length: 5 }, (_, i) => String((mData.assignment_co_map || {})[`A${i + 1}`] || evalAssignmentCoFallback[i] || `CO${i + 1}`)),
+            );
+          }
           for (const row of mData.marks) {
             next[row.roll_number] = {
               descriptive: (row.descriptive_marks || []).map((v: any) => {
@@ -2376,6 +2524,10 @@ type EvalStudentListSummary = {
               }),
               mcq: (row.mcq_marks || []).map((v: any) => normalizeObjectiveMark(v === null || v === undefined || v === '' ? null : Number(v))),
               fb: (row.fb_marks || []).map((v: any) => normalizeObjectiveMark(v === null || v === undefined || v === '' ? null : Number(v))),
+              assignment: Array.from({ length: 5 }, (_, i) => {
+                const source = row.assignment_marks?.[`A${i + 1}`];
+                return normalizeAssignmentMark(source === null || source === undefined || source === '' ? null : Number(source));
+              }),
             };
           }
           setEvalMarks(next);
@@ -2389,7 +2541,7 @@ type EvalStudentListSummary = {
     }
   };
 
-  const updateEvalMark = (roll: string, kind: 'descriptive' | 'mcq' | 'fb', index: number, value: string) => {
+  const updateEvalMark = (roll: string, kind: 'descriptive' | 'mcq' | 'fb' | 'assignment', index: number, value: string) => {
     const errorKey = `${roll}:${kind}:${index}`;
     const num = value === '' ? null : Number(value);
     if (kind === 'descriptive') {
@@ -2411,11 +2563,32 @@ type EvalStudentListSummary = {
       }
     }
 
+    if (kind === 'assignment') {
+      if (value === '') {
+        setEvalDescriptiveErrors((prev) => {
+          const next = { ...prev };
+          delete next[errorKey];
+          return next;
+        });
+      } else if (!Number.isFinite(num as any) || (num as number) < 0 || (num as number) > 1) {
+        setEvalDescriptiveErrors((prev) => ({ ...prev, [errorKey]: 'Assignment marks must be 0 or 1' }));
+        return;
+      } else {
+        setEvalDescriptiveErrors((prev) => {
+          const next = { ...prev };
+          delete next[errorKey];
+          return next;
+        });
+      }
+    }
+
     setEvalMarks((prev) => {
-      const existing = prev[roll] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
+      const existing = prev[roll] || makeEmptyEvalMarks();
       const nextArr = [...(existing as any)[kind]];
       if (!Number.isFinite(num as any)) {
         nextArr[index] = null;
+      } else if (kind === 'assignment') {
+        nextArr[index] = normalizeAssignmentMark(num as any);
       } else {
         nextArr[index] = num as any;
       }
@@ -2425,11 +2598,15 @@ type EvalStudentListSummary = {
 
   const updateObjectiveToggle = (roll: string, kind: 'mcq' | 'fb', index: number, value: 0.5 | 0) => {
     setEvalMarks((prev) => {
-      const existing = prev[roll] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
+      const existing = prev[roll] || makeEmptyEvalMarks();
       const nextArr = [...existing[kind]];
       nextArr[index] = normalizeObjectiveMark(value);
       return { ...prev, [roll]: { ...existing, [kind]: nextArr } };
     });
+  };
+
+  const updateAssignmentCoLabel = (index: number, value: string) => {
+    setEvalAssignmentCoLabels((prev) => prev.map((label, labelIndex) => (labelIndex === index ? value : label)));
   };
 
   const saveEvaluationMarks = async () => {
@@ -2444,13 +2621,14 @@ type EvalStudentListSummary = {
     setEvalError(null);
     try {
       const entries = evalStudentsSorted.map((s) => {
-        const m = evalMarks[s.roll_number] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
+        const m = evalMarks[s.roll_number] || makeEmptyEvalMarks();
         return {
           roll_number: s.roll_number,
           student_name: s.student_name,
           descriptive_marks: m.descriptive,
           mcq_marks: m.mcq,
           fb_marks: m.fb,
+          assignment_marks: Object.fromEntries(Array.from({ length: 5 }, (_, i) => [`A${i + 1}`, normalizeAssignmentMark(m.assignment?.[i]) ?? 0])),
         };
       });
 
@@ -2460,14 +2638,16 @@ type EvalStudentListSummary = {
         body: JSON.stringify({
           faculty_id: evalActiveFacultyId || user.faculty_id,
           actor_id: user.faculty_id,
-          department: user.department,
-          branch: user.department === 'H&S' ? evalFilters.branch : '',
+          department: evalDepartment || user.department,
+          branch: evalDepartment === 'H&S' ? evalFilters.branch : '',
           regulation: evalFilters.regulation,
           year: evalFilters.year,
+          semester: evalFilters.semester,
           section: evalFilters.section,
           mid_type: evalFilters.mid_type,
           subject_name: evalFilters.subject_name,
           subject_code: evalFilters.subject_code,
+          assignment_co_map: Object.fromEntries(Array.from({ length: 5 }, (_, i) => [`A${i + 1}`, evalAssignmentCoLabels[i] || `CO${i + 1}`])),
           entries,
         }),
       });
@@ -2498,10 +2678,11 @@ type EvalStudentListSummary = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           faculty_id: user.faculty_id,
-          department: user.department,
-          branch: user.department === 'H&S' ? evalFilters.branch : '',
+          department: evalDepartment || user.department,
+          branch: evalDepartment === 'H&S' ? evalFilters.branch : '',
           regulation: evalFilters.regulation,
           year: evalFilters.year,
+          semester: evalFilters.semester,
           section: evalFilters.section,
           mid_type: evalFilters.mid_type,
           subject_name: evalFilters.subject_name,
@@ -2524,6 +2705,7 @@ type EvalStudentListSummary = {
 
     const descCO = ['CO1', 'CO2', 'CO2', 'CO3', 'CO4', 'CO5'];
     const objCO = ['CO1', 'CO1', 'CO2', 'CO2', 'CO3', 'CO3', 'CO4', 'CO4', 'CO5', 'CO5'];
+    const assignmentCO = ['CO1', 'CO2', 'CO3', 'CO4', 'CO5'];
 
     const headers: any[] = [
       ['Department', user?.department || '', 'Regulation', evalFilters.regulation, 'Year', evalFilters.year, 'Section', evalFilters.section],
@@ -2537,16 +2719,19 @@ type EvalStudentListSummary = {
       ...Array.from({ length: 6 }, (_, i) => `Q${i + 1} (${(evalCoLabels[i] || descCO[i])})`),
       ...Array.from({ length: 10 }, (_, i) => `I${i + 1} (${(evalObjCoLabelsMcq[i] || objCO[i])})`),
       ...Array.from({ length: 10 }, (_, i) => `II${i + 1} (${(evalObjCoLabelsFb[i] || objCO[i])})`),
-      'Total',
+      ...Array.from({ length: 5 }, (_, i) => `A${i + 1} (${(evalAssignmentCoLabels[i] || assignmentCO[i])})`),
+      'Assignment Total',
+      'Grand Total',
     ];
 
     const rows = evalStudentsSorted.map((s) => {
-      const m = evalMarks[s.roll_number] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
+      const m = evalMarks[s.roll_number] || makeEmptyEvalMarks();
       const desc = m.descriptive.map((v) => (v ?? ''));
       const mcq = m.mcq.map((v) => (v ?? ''));
       const fb = m.fb.map((v) => (v ?? ''));
-      const total = getEvaluationTotals(m).finalTotal;
-      return [s.roll_number, s.student_name, ...desc, ...mcq, ...fb, total];
+      const assignment = m.assignment.map((v) => (v ?? ''));
+      const totals = getEvaluationTotals(m);
+      return [s.roll_number, s.student_name, ...desc, ...mcq, ...fb, ...assignment, totals.assignmentTotal, totals.finalTotal];
     });
 
     return [...headers, tableHeader, ...rows];
@@ -2630,7 +2815,7 @@ type EvalStudentListSummary = {
 
   useEffect(() => {
     if (view !== 'evaluation' || !user || user.role !== 'FACULTY') return;
-    if (!evalFilters.regulation || !evalFilters.year || !evalFilters.section || (user.department === 'H&S' && !evalFilters.branch)) {
+    if (!evalDepartment || !evalFilters.regulation || !evalFilters.year || !evalFilters.semester || !evalFilters.section || (evalDepartment === 'H&S' && !evalFilters.branch)) {
       setEvalListAvailability({ checking: false, exists: false, message: null });
       return;
     }
@@ -2639,11 +2824,12 @@ type EvalStudentListSummary = {
     setEvalListAvailability({ checking: true, exists: false, message: null });
 
     const qs = new URLSearchParams({
-      department: user.department,
+      department: evalDepartment,
       regulation: evalFilters.regulation,
       year: evalFilters.year,
+      semester: evalFilters.semester,
       section: evalFilters.section,
-      ...(user.department === 'H&S' ? { branch: evalFilters.branch } : {}),
+      ...(evalDepartment === 'H&S' ? { branch: evalFilters.branch } : {}),
     });
 
     fetch(`/api/eval/student-lists/availability?${qs.toString()}`)
@@ -2670,7 +2856,7 @@ type EvalStudentListSummary = {
     return () => {
       cancelled = true;
     };
-  }, [view, user?.faculty_id, user?.role, user?.department, evalFilters.regulation, evalFilters.year, evalFilters.section, evalFilters.branch]);
+  }, [view, user?.faculty_id, user?.role, user?.department, evalDepartment, evalFilters.regulation, evalFilters.year, evalFilters.semester, evalFilters.section, evalFilters.branch]);
 
   const handleSaveProfile = async () => {
     if (!user) return;
@@ -5021,6 +5207,7 @@ type EvalStudentListSummary = {
                                   onClick={async () => {
                                     const nextFilters = {
                                       ...evalFilters,
+                                      department: s.department,
                                       regulation: s.regulation,
                                       year: s.year,
                                       section: s.section,
@@ -5062,7 +5249,20 @@ type EvalStudentListSummary = {
                       {evalSubjectsError}
                     </div>
                   )}
-                  <div className={`grid grid-cols-1 gap-4 ${user.department === 'H&S' ? 'md:grid-cols-5' : 'md:grid-cols-4'}`}>
+                  <div className={`grid grid-cols-1 gap-4 ${evalDepartmentIsHS ? 'md:grid-cols-5' : 'md:grid-cols-5'}`}>
+                    <Select
+                      label="Department"
+                      value={evalDepartment}
+                      onChange={(e: any) => setEvalFilters((p) => ({
+                        ...p,
+                        department: e.target.value,
+                        branch: '',
+                        year: e.target.value === 'H&S' ? 'I' : (p.year === 'I' ? 'II' : p.year),
+                        subject_name: '',
+                        subject_code: '',
+                      }))}
+                      options={evalDepartmentOptions.map((dept) => ({ value: dept, label: dept }))}
+                    />
                     <Select
                       label="Regulation"
                       value={evalFilters.regulation}
@@ -5073,7 +5273,7 @@ type EvalStudentListSummary = {
                       ]}
                     />
 
-                    {user.department === 'H&S' ? (
+                    {evalDepartmentIsHS ? (
                       <Input label="Year" value="I" readOnly disabled />
                     ) : (
                       <Select
@@ -5098,21 +5298,15 @@ type EvalStudentListSummary = {
                       ]}
                     />
 
-                    {user.department === 'H&S' && (
+                    {evalDepartmentIsHS && (
                       <Select
                         label="Branch"
                         value={evalFilters.branch}
                         onChange={(e: any) => setEvalFilters((p) => ({ ...p, branch: e.target.value, subject_name: '', subject_code: '' }))}
-                        options={[
-                          { value: 'CSE', label: 'CSE' },
-                          { value: 'CSM', label: 'CSM' },
-                          { value: 'CSD', label: 'CSD' },
-                          { value: 'ECE', label: 'ECE' },
-                          { value: 'EEE', label: 'EEE' },
-                          { value: 'IT', label: 'IT' },
-                          { value: 'MECH', label: 'MECH' },
-                          { value: 'CIVIL', label: 'CIVIL' },
-                        ]}
+                        options={(evalBranchOptions.length ? evalBranchOptions : ['CSE', 'CSM', 'CSD', 'ECE', 'EEE', 'IT', 'MECH', 'CIVIL']).map((branch) => ({
+                          value: branch,
+                          label: branch,
+                        }))}
                       />
                     )}
                     <Select
@@ -5141,10 +5335,11 @@ type EvalStudentListSummary = {
                       label="Subject"
                       value={evalFilters.subject_name}
                       disabled={
+                        !evalDepartment ||
                         !evalFilters.regulation ||
                         !evalFilters.year ||
                         !evalFilters.semester ||
-                        (user.department === 'H&S' && !evalFilters.branch)
+                        (evalDepartmentIsHS && !evalFilters.branch)
                       }
                       onChange={(e: any) => {
                         const name = e.target.value;
@@ -5158,11 +5353,13 @@ type EvalStudentListSummary = {
                       options={[
                         {
                           value: '',
-                          label: evalSubjectsLoading
+                          label: assignedSubjectsLoading || evalSubjectsLoading
                             ? 'Loading subjects...'
                             : evalSubjects.length
                               ? 'Select Subject'
-                              : 'No subjects available',
+                              : assignedSubjects.length
+                                ? 'No allocated subjects for selected filters'
+                                : 'No subjects available',
                         },
                         ...evalSubjects.map((s) => ({ value: s.subject_name, label: s.subject_name })),
                       ]}
@@ -5197,8 +5394,13 @@ type EvalStudentListSummary = {
                       </Button>
                       {evalStep === 'descriptive' ? (
                         <Button variant="secondary" onClick={() => setEvalStep('objective')}>Next: Objective</Button>
+                      ) : evalStep === 'objective' ? (
+                        <>
+                          <Button variant="secondary" onClick={() => setEvalStep('descriptive')}>Back: Descriptive</Button>
+                          <Button variant="secondary" onClick={() => setEvalStep('assignment')}>Next: Assignment</Button>
+                        </>
                       ) : (
-                        <Button variant="secondary" onClick={() => setEvalStep('descriptive')}>Back: Descriptive</Button>
+                        <Button variant="secondary" onClick={() => setEvalStep('objective')}>Back: Objective</Button>
                       )}
                       {user.role === 'FACULTY' && (
                         <Button variant="success" onClick={submitEvaluation} disabled={evalLoading}>
@@ -5243,7 +5445,7 @@ type EvalStudentListSummary = {
                         </thead>
                         <tbody className="divide-y divide-primary/5">
                           {evalStudentsSorted.map((s) => {
-                            const m = evalMarks[s.roll_number] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
+                            const m = evalMarks[s.roll_number] || makeEmptyEvalMarks();
                             const totals = getEvaluationTotals(m);
 
                             return (
@@ -5295,7 +5497,7 @@ type EvalStudentListSummary = {
                   {evalStep === 'objective' && (
                     <div className="p-6 space-y-8">
                       <div className="overflow-x-auto">
-                        <div className="font-bold text-black mb-2">Part I – MCQs</div>
+                        <div className="font-bold text-black mb-2">Part II - Objective (MCQs)</div>
                         <table className="w-full text-left">
                           <thead>
                             <tr className="bg-primary-light/10 text-primary/60 text-xs uppercase tracking-wider font-semibold">
@@ -5309,7 +5511,7 @@ type EvalStudentListSummary = {
                           </thead>
                           <tbody className="divide-y divide-primary/5">
                             {evalStudentsSorted.map((s) => {
-                              const m = evalMarks[s.roll_number] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
+                              const m = evalMarks[s.roll_number] || makeEmptyEvalMarks();
                               const totals = getEvaluationTotals(m);
 
                               return (
@@ -5346,7 +5548,7 @@ type EvalStudentListSummary = {
                                       </div>
                                     </td>
                                   ))}
-                                  <td className="px-4 py-3 text-sm font-bold text-center text-black">{totals.finalTotal}</td>
+                                  <td className="px-4 py-3 text-sm font-bold text-center text-black">{totals.mcqTotal}</td>
                                 </tr>
                               );
                             })}
@@ -5355,7 +5557,7 @@ type EvalStudentListSummary = {
                       </div>
 
                       <div className="overflow-x-auto">
-                        <div className="font-bold text-black mb-2">Part II – Fill in the Blanks</div>
+                        <div className="font-bold text-black mb-2">Part II - Fill in the Blanks</div>
                         <table className="w-full text-left">
                           <thead>
                             <tr className="bg-primary-light/10 text-primary/60 text-xs uppercase tracking-wider font-semibold">
@@ -5369,7 +5571,7 @@ type EvalStudentListSummary = {
                           </thead>
                           <tbody className="divide-y divide-primary/5">
                             {evalStudentsSorted.map((s) => {
-                              const m = evalMarks[s.roll_number] || { descriptive: Array(6).fill(null), mcq: Array(10).fill(null), fb: Array(10).fill(null) };
+                              const m = evalMarks[s.roll_number] || makeEmptyEvalMarks();
                               const totals = getEvaluationTotals(m);
 
                               return (
@@ -5406,6 +5608,86 @@ type EvalStudentListSummary = {
                                       </div>
                                     </td>
                                   ))}
+                                  <td className="px-4 py-3 text-sm font-bold text-center text-black">{totals.fbTotal}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {evalStep === 'assignment' && (
+                    <div className="p-6 space-y-4">
+                      <div className="font-bold text-black">Part III - Assignment</div>
+                      <div className="text-sm text-black/60">
+                        Enter 0 or 1 for each assignment question. Assignment total and grand total update live.
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left">
+                          <thead>
+                            <tr className="bg-primary-light/10 text-primary/60 text-xs uppercase tracking-wider font-semibold">
+                              <th className="px-4 py-3">Roll No</th>
+                              <th className="px-4 py-3">Student Name</th>
+                              {Array.from({ length: 5 }, (_, i) => (
+                                <th key={i} className="px-4 py-3 text-center">
+                                  <div className="flex min-w-[96px] flex-col items-center gap-2">
+                                    <span>{`A${i + 1}`}</span>
+                                    <select
+                                      value={evalAssignmentCoLabels[i] || `CO${i + 1}`}
+                                      onChange={(e) => updateAssignmentCoLabel(i, e.target.value)}
+                                      className="w-full rounded-lg border border-primary/10 bg-white px-2 py-1 text-[11px] font-medium normal-case text-black"
+                                    >
+                                      {['CO1', 'CO2', 'CO3', 'CO4', 'CO5'].map((co) => (
+                                        <option key={co} value={co}>{co}</option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                </th>
+                              ))}
+                              <th className="px-4 py-3 text-center">Assignment Total</th>
+                              <th className="px-4 py-3 text-center">Grand Total</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-primary/5">
+                            {evalStudentsSorted.map((s) => {
+                              const m = evalMarks[s.roll_number] || makeEmptyEvalMarks();
+                              const totals = getEvaluationTotals(m);
+
+                              return (
+                                <tr key={s.roll_number} className="hover:bg-primary-light/10">
+                                  <td className="px-4 py-3 text-sm font-medium text-black">{s.roll_number}</td>
+                                  <td className="px-4 py-3 text-sm text-black/80">{s.student_name}</td>
+                                  {Array.from({ length: 5 }, (_, i) => {
+                                    const errorKey = `${s.roll_number}:assignment:${i}`;
+                                    const fieldError = evalDescriptiveErrors[errorKey];
+
+                                    return (
+                                      <td key={i} className="px-2 py-2 align-top">
+                                        <div className="space-y-1">
+                                          <input
+                                            type="number"
+                                            min={0}
+                                            max={1}
+                                            step={1}
+                                            title="Assignment marks must be 0 or 1"
+                                            className={`w-20 px-2 py-1 border rounded-lg text-sm text-center transition-colors ${
+                                              fieldError ? 'border-red-500 bg-red-50 text-red-700' : 'border-primary/10'
+                                            }`}
+                                            value={(m.assignment?.[i] ?? '') as any}
+                                            onChange={(e) => updateEvalMark(s.roll_number, 'assignment', i, e.target.value)}
+                                          />
+                                          {fieldError && (
+                                            <div className="w-20 text-[10px] leading-tight text-red-600 text-center">
+                                              {fieldError}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </td>
+                                    );
+                                  })}
+                                  <td className="px-4 py-3 text-sm font-bold text-center text-black">{totals.assignmentTotal}</td>
                                   <td className="px-4 py-3 text-sm font-bold text-center text-black">{totals.finalTotal}</td>
                                 </tr>
                               );
@@ -5424,6 +5706,7 @@ type EvalStudentListSummary = {
             <QuestionPaperForm
               user={user!}
               assignedSubjects={assignedSubjects}
+              assignedSubjectsLoading={assignedSubjectsLoading}
               onCancel={() => setView('dashboard')}
               onSuccess={() => {
                 fetchPapers();
@@ -5437,6 +5720,7 @@ type EvalStudentListSummary = {
               user={user!}
               paper={selectedPaper}
               assignedSubjects={assignedSubjects}
+              assignedSubjectsLoading={assignedSubjectsLoading}
               onCancel={() => setView('dashboard')}
               onSuccess={() => {
                 fetchPapers();

@@ -69,8 +69,40 @@ function objectiveSectionTotal(values: any[]) {
   return (values || []).reduce((sum, value) => sum + (normalizeObjectiveMark(value) ?? 0), 0);
 }
 
-function evaluationTotal(descriptive: any[], mcq: any[], fb: any[]) {
-  return bestFourDescriptiveTotal(descriptive) + objectiveSectionTotal(mcq || []) + objectiveSectionTotal(fb || []);
+function assignmentSectionTotal(values: any[]) {
+  return (values || []).reduce((sum, value) => sum + (normalizeAssignmentMark(value) ?? 0), 0);
+}
+
+function normalizeAssignmentMark(value: any) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  if (parsed < 0 || parsed > 1) return null;
+  return parsed >= 1 ? 1 : 0;
+}
+
+function normalizeAssignmentMarksObject(value: any) {
+  const out: Record<string, number> = {};
+  for (let i = 0; i < 5; i++) {
+    const key = `A${i + 1}`;
+    const mark = normalizeAssignmentMark(value?.[key]);
+    out[key] = mark ?? 0;
+  }
+  return out;
+}
+
+function normalizeAssignmentCoMap(value: any) {
+  const out: Record<string, string> = {};
+  for (let i = 0; i < 5; i++) {
+    const key = `A${i + 1}`;
+    const next = String(value?.[key] || `CO${i + 1}`).trim().toUpperCase();
+    out[key] = ["CO1", "CO2", "CO3", "CO4", "CO5"].includes(next) ? next : `CO${i + 1}`;
+  }
+  return out;
+}
+
+function evaluationTotal(descriptive: any[], mcq: any[], fb: any[], assignment: any[]) {
+  return bestFourDescriptiveTotal(descriptive) + objectiveSectionTotal(mcq || []) + objectiveSectionTotal(fb || []) + assignmentSectionTotal(assignment || []);
 }
 
 export function createEvaluationRouter(supabase: SupabaseClient) {
@@ -78,6 +110,36 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
 
   function canHodAccessDepartment(hodDept: string, targetDept: string) {
     return hodDept === targetDept;
+  }
+
+  async function facultyHasAssignedSubject(input: {
+    faculty_id: string;
+    department: string;
+    branch?: string;
+    regulation: string;
+    year: string;
+    semester?: string;
+    subject_code: string;
+  }) {
+    let query = supabase
+      .from("faculty_subjects")
+      .select("id", { head: true, count: "exact" })
+      .eq("faculty_id", String(input.faculty_id || "").trim())
+      .eq("department", String(input.department || "").trim())
+      .eq("regulation", normalizeReg(input.regulation))
+      .eq("year", normalizeYear(input.year))
+      .eq("subject_code", String(input.subject_code || "").trim().toUpperCase());
+
+    const department = String(input.department || "").trim();
+    if (department === "H&S") query = query.eq("branch", String(input.branch || "").trim().toUpperCase());
+    else query = query.eq("branch", "");
+
+    const semester = normalizeSemester(input.semester);
+    if (semester) query = query.eq("semester", semester);
+
+    const { count, error } = await query;
+    if (error) throw new Error(error.message);
+    return Number(count || 0) > 0;
   }
 
   function buildStudentListId(department: string, branch: string, regulation: string, year: string, semester: string, section: string) {
@@ -90,6 +152,77 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
     if (list.branch) parts.push(list.branch);
     parts.push(list.section);
     return `${parts.join("_")}.csv`;
+  }
+
+  async function fetchStudentListRows(input: {
+    department: string;
+    branch: string;
+    regulation: string;
+    year: string;
+    semester: string;
+    section: string;
+  }) {
+    const baseQuery = () =>
+      supabase
+        .from("students")
+        .select("roll_number,student_name,department,branch,regulation,year,semester,section,uploaded_by,uploaded_at")
+        .eq("department", input.department)
+        .eq("branch", input.branch)
+        .eq("regulation", input.regulation)
+        .eq("year", input.year)
+        .eq("section", input.section)
+        .order("roll_number", { ascending: true });
+
+    const { data: exactRows, error: exactErr } = await baseQuery().eq("semester", input.semester);
+    if (exactErr) throw new Error(exactErr.message);
+    if ((exactRows || []).length) {
+      return { rows: exactRows || [], matchedSemester: input.semester, usedLegacyFallback: false };
+    }
+
+    // Backward compatibility for older uploaded lists saved before semester was enforced.
+    const { data: legacyRows, error: legacyErr } = await baseQuery().eq("semester", "");
+    if (legacyErr) throw new Error(legacyErr.message);
+    return {
+      rows: legacyRows || [],
+      matchedSemester: input.semester,
+      usedLegacyFallback: true,
+    };
+  }
+
+  async function checkStudentListAvailability(input: {
+    department: string;
+    branch: string;
+    regulation: string;
+    year: string;
+    semester: string;
+    section: string;
+  }) {
+    const exact = await supabase
+      .from("students")
+      .select("id", { head: true, count: "exact" })
+      .eq("department", input.department)
+      .eq("branch", input.branch)
+      .eq("regulation", input.regulation)
+      .eq("year", input.year)
+      .eq("semester", input.semester)
+      .eq("section", input.section);
+
+    if (exact.error) throw new Error(exact.error.message);
+    const exactCount = Number(exact.count || 0);
+    if (exactCount > 0) return { exists: true, count: exactCount, usedLegacyFallback: false };
+
+    const legacy = await supabase
+      .from("students")
+      .select("id", { head: true, count: "exact" })
+      .eq("department", input.department)
+      .eq("branch", input.branch)
+      .eq("regulation", input.regulation)
+      .eq("year", input.year)
+      .eq("semester", "")
+      .eq("section", input.section);
+
+    if (legacy.error) throw new Error(legacy.error.message);
+    return { exists: Number(legacy.count || 0) > 0, count: Number(legacy.count || 0), usedLegacyFallback: true };
   }
 
   function summarizeStudentLists(rows: any[]): StudentListSummary[] {
@@ -149,6 +282,7 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       if (!department) return res.status(400).json({ error: "department is required" });
       if (!regulation) return res.status(400).json({ error: "regulation is required" });
       if (!year) return res.status(400).json({ error: "year is required" });
+      if (!semester) return res.status(400).json({ error: "semester is required" });
       if (!section) return res.status(400).json({ error: "section is required" });
       if (!students.length) return res.status(400).json({ error: "students are required" });
 
@@ -182,6 +316,7 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
         .eq("branch", effectiveBranch)
         .eq("regulation", regulation)
         .eq("year", year)
+        .eq("semester", semester)
         .eq("section", section);
 
       if (delErr) return res.status(400).json({ error: delErr.message });
@@ -220,27 +355,26 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       const branch = String(req.query.branch || "").trim().toUpperCase();
       const regulation = normalizeReg(req.query.regulation);
       const year = normalizeYear(req.query.year);
+      const semester = normalizeSemester(req.query.semester);
       const section = normalizeSection(req.query.section);
 
       if (!department) return res.status(400).json({ error: "department is required" });
       if (!regulation) return res.status(400).json({ error: "regulation is required" });
       if (!year) return res.status(400).json({ error: "year is required" });
+      if (!semester) return res.status(400).json({ error: "semester is required" });
       if (!section) return res.status(400).json({ error: "section is required" });
 
       const effectiveBranch = department === "H&S" ? branch : "";
       if (department === "H&S" && !effectiveBranch) return res.status(400).json({ error: "branch is required for H&S" });
 
-      const { data: rows, error } = await supabase
-        .from("students")
-        .select("roll_number,student_name,department,branch,regulation,year,semester,section,uploaded_by,uploaded_at")
-        .eq("department", department)
-        .eq("branch", effectiveBranch)
-        .eq("regulation", regulation)
-        .eq("year", year)
-        .eq("section", section)
-        .order("roll_number", { ascending: true });
-
-      if (error) return res.status(400).json({ error: error.message });
+      const { rows } = await fetchStudentListRows({
+        department,
+        branch: effectiveBranch,
+        regulation,
+        year,
+        semester,
+        section,
+      });
       if (!rows || rows.length === 0) return res.status(404).json({ error: "Student list not found" });
 
       let uploaded_by = rows[0].uploaded_by || "";
@@ -256,12 +390,12 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       res.json({
         success: true,
         list: {
-          id: buildStudentListId(department, effectiveBranch, regulation, year, normalizeSemester(rows[0]?.semester), section),
+          id: buildStudentListId(department, effectiveBranch, regulation, year, semester, section),
           department,
           branch: effectiveBranch,
           regulation,
           year,
-          semester: normalizeSemester(rows[0]?.semester),
+          semester,
           section,
           uploaded_by,
           uploaded_at,
@@ -304,27 +438,27 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       const branch = String(req.query.branch || "").trim().toUpperCase();
       const regulation = normalizeReg(req.query.regulation);
       const year = normalizeYear(req.query.year);
+      const semester = normalizeSemester(req.query.semester);
       const section = normalizeSection(req.query.section);
 
       if (!department) return res.status(400).json({ error: "department is required" });
       if (!regulation) return res.status(400).json({ error: "regulation is required" });
       if (!year) return res.status(400).json({ error: "year is required" });
+      if (!semester) return res.status(400).json({ error: "semester is required" });
       if (!section) return res.status(400).json({ error: "section is required" });
 
       const effectiveBranch = department === "H&S" ? branch : "";
       if (department === "H&S" && !effectiveBranch) return res.status(400).json({ error: "branch is required for H&S" });
 
-      const { count, error } = await supabase
-        .from("students")
-        .select("id", { head: true, count: "exact" })
-        .eq("department", department)
-        .eq("branch", effectiveBranch)
-        .eq("regulation", regulation)
-        .eq("year", year)
-        .eq("section", section);
-
-      if (error) return res.status(400).json({ error: error.message });
-      res.json({ success: true, exists: Number(count || 0) > 0, count: Number(count || 0) });
+      const availability = await checkStudentListAvailability({
+        department,
+        branch: effectiveBranch,
+        regulation,
+        year,
+        semester,
+        section,
+      });
+      res.json({ success: true, exists: availability.exists, count: availability.count });
     } catch (error: any) {
       console.error("Student list availability error:", error);
       res.status(500).json({ error: "Internal Server Error" });
@@ -339,6 +473,7 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       const branch = String(body.branch || "").trim().toUpperCase();
       const regulation = normalizeReg(body.regulation);
       const year = normalizeYear(body.year);
+      const semester = normalizeSemester(body.semester);
       const section = normalizeSection(body.section);
 
       if (!hod_faculty_id) return res.status(400).json({ error: "hod_faculty_id is required" });
@@ -356,17 +491,30 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       const effectiveBranch = department === "H&S" ? branch : "";
       if (department === "H&S" && !effectiveBranch) return res.status(400).json({ error: "branch is required for H&S" });
 
-      const { error, count } = await supabase
-        .from("students")
-        .delete({ count: "exact" })
-        .eq("department", department)
-        .eq("branch", effectiveBranch)
-        .eq("regulation", regulation)
-        .eq("year", year)
-        .eq("section", section);
+      const runDelete = async (semesterValue: string) =>
+        supabase
+          .from("students")
+          .delete({ count: "exact" })
+          .eq("department", department)
+          .eq("branch", effectiveBranch)
+          .eq("regulation", regulation)
+          .eq("year", year)
+          .eq("semester", semesterValue)
+          .eq("section", section);
 
-      if (error) return res.status(400).json({ error: error.message });
-      res.json({ success: true, deleted: Number(count || 0) });
+      let deletedCount = 0;
+
+      if (semester) {
+        const { error, count } = await runDelete(semester);
+        if (error) return res.status(400).json({ error: error.message });
+        deletedCount += Number(count || 0);
+      } else {
+        const { error, count } = await runDelete("");
+        if (error) return res.status(400).json({ error: error.message });
+        deletedCount += Number(count || 0);
+      }
+
+      res.json({ success: true, deleted: deletedCount });
     } catch (error: any) {
       console.error("Student list delete error:", error);
       res.status(500).json({ error: "Internal Server Error" });
@@ -383,16 +531,19 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       const branch = String(body.branch || "").trim().toUpperCase();
       const regulation = normalizeReg(body.regulation);
       const year = normalizeYear(body.year);
+      const semester = normalizeSemester(body.semester);
       const section = normalizeSection(body.section);
       const mid_type = String(body.mid_type || "").trim();
       const subject_name = String(body.subject_name || "").trim();
       const subject_code = String(body.subject_code || "").trim().toUpperCase();
+      const assignment_co_map = normalizeAssignmentCoMap(body.assignment_co_map || {});
       const entries = Array.isArray(body.entries) ? (body.entries as any[]) : [];
 
       if (!faculty_id) return res.status(400).json({ error: "faculty_id is required" });
       if (!department) return res.status(400).json({ error: "department is required" });
       if (!regulation) return res.status(400).json({ error: "regulation is required" });
       if (!year) return res.status(400).json({ error: "year is required" });
+      if (!semester) return res.status(400).json({ error: "semester is required" });
       if (!section) return res.status(400).json({ error: "section is required" });
       if (!mid_type) return res.status(400).json({ error: "mid_type is required" });
       if (!subject_name) return res.status(400).json({ error: "subject_name is required" });
@@ -405,12 +556,10 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
 
       const targetCheck = await requireUserByFacultyId(supabase, faculty_id);
       if (!targetCheck.ok) return res.status(targetCheck.status).json({ error: targetCheck.error });
-      const target = targetCheck.user;
 
       if (actor.role !== "FACULTY" && actor.role !== "HOD") return res.status(403).json({ error: "Only Faculty/HOD can save marks" });
       if (actor.role === "FACULTY" && actor.faculty_id !== faculty_id) return res.status(403).json({ error: "Faculty can only edit their own marks" });
       if (actor.role === "HOD" && !canHodAccessDepartment(String(actor.department || "").trim(), department)) return res.status(403).json({ error: "HOD department mismatch" });
-      if (String(target.department || "").trim() !== department) return res.status(403).json({ error: "Faculty department mismatch" });
 
       if (department === "H&S") {
         if (!branch) return res.status(400).json({ error: "branch is required for H&S" });
@@ -418,6 +567,16 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       }
 
       const effectiveBranch = department === "H&S" ? branch : "";
+      const hasAssignedSubject = await facultyHasAssignedSubject({
+        faculty_id,
+        department,
+        branch: effectiveBranch,
+        regulation,
+        year,
+        semester,
+        subject_code,
+      });
+      if (!hasAssignedSubject) return res.status(403).json({ error: "Faculty subject allocation mismatch" });
       const now = new Date().toISOString();
 
       const { data: existingEval, error: findErr } = await supabase
@@ -472,8 +631,10 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
         const d = Array.isArray(e.descriptive_marks) ? e.descriptive_marks : [];
         const m = Array.isArray(e.mcq_marks) ? e.mcq_marks : [];
         const f = Array.isArray(e.fb_marks) ? e.fb_marks : [];
-
-        const total = evaluationTotal(d, m, f);
+        const assignmentMarksObject = normalizeAssignmentMarksObject(e.assignment_marks || {});
+        const assignmentValues = Array.from({ length: 5 }, (_, i) => assignmentMarksObject[`A${i + 1}`] ?? 0);
+        const assignmentTotal = assignmentSectionTotal(assignmentValues);
+        const total = evaluationTotal(d, m, f, assignmentValues);
 
         rows.push({
           evaluation_id: evaluationId,
@@ -505,6 +666,10 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
           fb8: normalizeObjectiveMark(f[7]),
           fb9: normalizeObjectiveMark(f[8]),
           fb10: normalizeObjectiveMark(f[9]),
+          assignment_marks: assignmentMarksObject,
+          assignment_total: assignmentTotal,
+          assignment_co_map: assignment_co_map,
+          grand_total: total,
           total_marks: total,
           updated_at: now,
         });
@@ -571,14 +736,21 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
 
       if (error) return res.status(400).json({ error: error.message });
 
+      const assignmentCoMap =
+        rows?.find((r: any) => r.assignment_co_map && typeof r.assignment_co_map === "object")?.assignment_co_map || normalizeAssignmentCoMap({});
+
       res.json({
         success: true,
+        assignment_co_map: assignmentCoMap,
         marks: (rows || []).map((r: any) => ({
           roll_number: r.roll_number,
           student_name: r.student_name || "",
           descriptive_marks: [r.q1, r.q2, r.q3, r.q4, r.q5, r.q6].map((v: any) => (v === null || v === undefined ? null : Number(v))),
           mcq_marks: [r.mcq1, r.mcq2, r.mcq3, r.mcq4, r.mcq5, r.mcq6, r.mcq7, r.mcq8, r.mcq9, r.mcq10].map((v: any) => (v === null || v === undefined ? null : Number(v))),
           fb_marks: [r.fb1, r.fb2, r.fb3, r.fb4, r.fb5, r.fb6, r.fb7, r.fb8, r.fb9, r.fb10].map((v: any) => (v === null || v === undefined ? null : Number(v))),
+          assignment_marks: normalizeAssignmentMarksObject(r.assignment_marks || {}),
+          assignment_total: Number(r.assignment_total || 0),
+          grand_total: Number(r.grand_total ?? r.total_marks ?? 0),
         })),
       });
     } catch (error: any) {
@@ -596,6 +768,7 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       const branch = String(body.branch || "").trim().toUpperCase();
       const regulation = normalizeReg(body.regulation);
       const year = normalizeYear(body.year);
+      const semester = normalizeSemester(body.semester);
       const section = normalizeSection(body.section);
       const mid_type = String(body.mid_type || "").trim();
       const subject_name = String(body.subject_name || "").trim();
@@ -605,6 +778,7 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       if (!department) return res.status(400).json({ error: "department is required" });
       if (!regulation) return res.status(400).json({ error: "regulation is required" });
       if (!year) return res.status(400).json({ error: "year is required" });
+      if (!semester) return res.status(400).json({ error: "semester is required" });
       if (!section) return res.status(400).json({ error: "section is required" });
       if (!mid_type) return res.status(400).json({ error: "mid_type is required" });
       if (!subject_name) return res.status(400).json({ error: "subject_name is required" });
@@ -615,13 +789,23 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       const user = userCheck.user;
 
       if (user.role !== "FACULTY") return res.status(403).json({ error: "Only Faculty can submit evaluations" });
-      if (String(user.department || "").trim() !== department) return res.status(403).json({ error: "Faculty department mismatch" });
 
       const effectiveBranch = department === "H&S" ? branch : "";
       if (department === "H&S") {
         if (!effectiveBranch) return res.status(400).json({ error: "branch is required for H&S" });
         if (year !== "I") return res.status(400).json({ error: "H&S submissions are only for year I" });
       }
+
+      const hasAssignedSubject = await facultyHasAssignedSubject({
+        faculty_id,
+        department,
+        branch: effectiveBranch,
+        regulation,
+        year,
+        semester,
+        subject_code,
+      });
+      if (!hasAssignedSubject) return res.status(403).json({ error: "Faculty subject allocation mismatch" });
 
       const { data: evaluation, error: eErr } = await supabase
         .from("evaluations")

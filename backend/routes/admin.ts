@@ -115,6 +115,7 @@ export function createAdminRouter(supabase: SupabaseClient) {
       if (nextId !== id) {
         await supabase.from("question_papers").update({ faculty_id: nextId }).eq("faculty_id", id);
         await supabase.from("evaluations").update({ faculty_id: nextId }).eq("faculty_id", id);
+        await supabase.from("faculty_subjects").update({ faculty_id: nextId }).eq("faculty_id", id);
       }
 
       const { data: updated, error: readErr } = await supabase

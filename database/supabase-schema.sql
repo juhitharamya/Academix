@@ -106,10 +106,26 @@ create table if not exists public.student_marks (
   mcq6 numeric, mcq7 numeric, mcq8 numeric, mcq9 numeric, mcq10 numeric,
   fb1 numeric, fb2 numeric, fb3 numeric, fb4 numeric, fb5 numeric,
   fb6 numeric, fb7 numeric, fb8 numeric, fb9 numeric, fb10 numeric,
+  assignment_marks jsonb not null default '{}'::jsonb,
+  assignment_total numeric not null default 0,
+  assignment_co_map jsonb not null default '{}'::jsonb,
+  grand_total numeric not null default 0,
   total_marks numeric not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+alter table if exists public.student_marks
+  add column if not exists assignment_marks jsonb not null default '{}'::jsonb;
+
+alter table if exists public.student_marks
+  add column if not exists assignment_total numeric not null default 0;
+
+alter table if exists public.student_marks
+  add column if not exists assignment_co_map jsonb not null default '{}'::jsonb;
+
+alter table if exists public.student_marks
+  add column if not exists grand_total numeric not null default 0;
 
 create unique index if not exists student_marks_unique_idx
   on public.student_marks (evaluation_id, roll_number);

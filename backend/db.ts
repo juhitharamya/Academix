@@ -74,14 +74,18 @@ export function openDb(dbFile?: string) {
           descriptive_marks TEXT NOT NULL DEFAULT '[]',
           mcq_marks TEXT NOT NULL DEFAULT '[]',
           fb_marks TEXT NOT NULL DEFAULT '[]',
+          assignment_marks TEXT NOT NULL DEFAULT '{}',
+          assignment_total REAL NOT NULL DEFAULT 0,
+          assignment_co_map TEXT NOT NULL DEFAULT '{}',
+          grand_total REAL NOT NULL DEFAULT 0,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
           UNIQUE(department, branch, regulation, year, section, mid_type, subject_code, roll_number)
         );
         INSERT INTO evaluation_marks_new
-          (id, faculty_id, department, branch, regulation, year, section, mid_type, subject_name, subject_code, roll_number, student_name, descriptive_marks, mcq_marks, fb_marks, created_at, updated_at)
+          (id, faculty_id, department, branch, regulation, year, section, mid_type, subject_name, subject_code, roll_number, student_name, descriptive_marks, mcq_marks, fb_marks, assignment_marks, assignment_total, assignment_co_map, grand_total, created_at, updated_at)
         SELECT
-          id, faculty_id, department, '', regulation, year, section, mid_type, subject_name, subject_code, roll_number, student_name, descriptive_marks, mcq_marks, fb_marks, created_at, updated_at
+          id, faculty_id, department, '', regulation, year, section, mid_type, subject_name, subject_code, roll_number, student_name, descriptive_marks, mcq_marks, fb_marks, '{}', 0, '{}', total_marks, created_at, updated_at
         FROM evaluation_marks;
         DROP TABLE evaluation_marks;
         ALTER TABLE evaluation_marks_new RENAME TO evaluation_marks;
@@ -202,6 +206,10 @@ export function openDb(dbFile?: string) {
       descriptive_marks TEXT NOT NULL DEFAULT '[]',
       mcq_marks TEXT NOT NULL DEFAULT '[]',
       fb_marks TEXT NOT NULL DEFAULT '[]',
+      assignment_marks TEXT NOT NULL DEFAULT '{}',
+      assignment_total REAL NOT NULL DEFAULT 0,
+      assignment_co_map TEXT NOT NULL DEFAULT '{}',
+      grand_total REAL NOT NULL DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(department, branch, regulation, year, section, mid_type, subject_code, roll_number)
@@ -234,6 +242,10 @@ export function openDb(dbFile?: string) {
   ensureColumn(db, "question_papers", "regulation", "TEXT");
   ensureColumn(db, "faculty", "email", "TEXT");
   ensureColumn(db, "faculty", "status", "TEXT");
+  ensureColumn(db, "evaluation_marks", "assignment_marks", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn(db, "evaluation_marks", "assignment_total", "REAL NOT NULL DEFAULT 0");
+  ensureColumn(db, "evaluation_marks", "assignment_co_map", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn(db, "evaluation_marks", "grand_total", "REAL NOT NULL DEFAULT 0");
   ensureColumn(db, "subjective_questions", "co_level", "TEXT");
   ensureColumn(db, "subjective_questions", "btl_level", "TEXT");
   ensureColumn(db, "objective_mcqs", "co_level", "TEXT");
