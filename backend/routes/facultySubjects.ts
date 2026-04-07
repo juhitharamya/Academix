@@ -2,6 +2,14 @@ import express from "express";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { readAuthTokenFromRequest, verifyAuthToken } from "./authToken.ts";
 import { requireUserByFacultyId } from "./supabaseUtils.ts";
+import {
+  HS_DEPARTMENT,
+  isMissingSubjectMasterTableError,
+  normalizeDepartment,
+  normalizeSemester,
+  normalizeSubjectMasterInput,
+  normalizeYear,
+} from "./subjectMaster.ts";
 
 function norm(v: any) {
   return String(v || "").trim();
@@ -103,8 +111,8 @@ export function createFacultySubjectsRouter(supabase: SupabaseClient) {
       const body = (req.body || {}) as any;
       const faculty_id = norm(body.faculty_id);
       const regulation = normUpper(body.regulation);
-      const year = normUpper(body.year);
-      const semester = norm(body.semester);
+      const year = normalizeYear(body.year);
+      const semester = normalizeSemester(body.semester);
       const subject_name = norm(body.subject_name);
       const subject_code = normUpper(body.subject_code);
       const branchFromBody = normUpper(body.branch);
@@ -127,32 +135,53 @@ export function createFacultySubjectsRouter(supabase: SupabaseClient) {
       if (String(faculty.status || "Active") === "Disabled") return res.status(403).json({ error: "Account is disabled" });
       if (String(faculty.role || "").toLowerCase() !== "faculty") return res.status(400).json({ error: "Assignments can be created only for Faculty accounts" });
 
-      const effectiveDepartment = regulation === "R25" && year === "I" ? "H&S" : String(faculty.department || "").trim();
+      const effectiveDepartment = normalizeDepartment(faculty.department);
       if (!effectiveDepartment) return res.status(400).json({ error: "Faculty department is missing" });
       const includeBranch = await hasFacultySubjectsBranch();
 
-      let effectiveBranch = "";
-      if (effectiveDepartment === "H&S" && includeBranch) {
-        // For H&S subjects, branch determines which department stream (CSE/CSM/CSD/ECE...) the subject belongs to.
-        // If the Faculty itself belongs to a non-H&S department and we are forcing H&S (R25, Year I), lock branch to that department.
-        if (regulation === "R25" && year === "I" && String(faculty.department || "").trim() && String(faculty.department || "").trim() !== "H&S") {
-          effectiveBranch = String(faculty.department || "").trim().toUpperCase();
-        } else {
-          effectiveBranch = branchFromBody;
-        }
-        if (!effectiveBranch) return res.status(400).json({ error: "branch is required for H&S assignments" });
+      const effectiveBranch = effectiveDepartment === HS_DEPARTMENT ? branchFromBody : effectiveDepartment;
+      const normalizedSubject = normalizeSubjectMasterInput({
+        regulation,
+        department: effectiveDepartment,
+        branch: effectiveBranch,
+        year,
+        semester,
+        subject_name,
+        subject_code,
+      });
+      if ("error" in normalizedSubject) return res.status(400).json({ error: normalizedSubject.error });
+
+      const subjectRow = normalizedSubject.value;
+      const { data: masterSubject, error: masterSubjectError } = await supabase
+        .from("subject_master")
+        .select("id,subject_name,subject_code")
+        .eq("regulation", subjectRow.regulation)
+        .eq("department", subjectRow.department)
+        .eq("branch", subjectRow.branch)
+        .eq("year", subjectRow.year)
+        .eq("semester", subjectRow.semester)
+        .eq("subject_code", subjectRow.subject_code)
+        .eq("is_active", true)
+        .maybeSingle();
+
+      if (masterSubjectError && isMissingSubjectMasterTableError(masterSubjectError)) {
+        return res.status(400).json({ error: "subject_master table is missing. Run the latest Supabase migration first." });
+      }
+      if (masterSubjectError) return res.status(400).json({ error: masterSubjectError.message });
+      if (!masterSubject) {
+        return res.status(400).json({ error: "Selected subject was not found in subject_master for the chosen regulation, department, branch, year, and semester" });
       }
 
       let existingQuery = supabase
         .from("faculty_subjects")
         .select("id")
         .eq("faculty_id", faculty_id)
-        .eq("regulation", regulation)
-        .eq("year", year)
-        .eq("semester", semester)
-        .eq("subject_code", subject_code);
+        .eq("regulation", subjectRow.regulation)
+        .eq("year", subjectRow.year)
+        .eq("semester", subjectRow.semester)
+        .eq("subject_code", subjectRow.subject_code);
 
-      if (includeBranch) existingQuery = existingQuery.eq("branch", effectiveBranch);
+      if (includeBranch) existingQuery = existingQuery.eq("branch", subjectRow.branch);
 
       const { data: existing, error: exErr } = await existingQuery.maybeSingle();
 
@@ -162,14 +191,15 @@ export function createFacultySubjectsRouter(supabase: SupabaseClient) {
       const payload: Record<string, any> = {
         faculty_id,
         faculty_name: String(faculty.name || "").trim(),
-        department: effectiveDepartment,
-        regulation,
-        year,
-        semester,
-        subject_name,
-        subject_code,
+        department: subjectRow.department,
+        regulation: subjectRow.regulation,
+        year: subjectRow.year,
+        semester: subjectRow.semester,
+        subject_name: masterSubject.subject_name,
+        subject_code: masterSubject.subject_code,
+        subject_master_id: masterSubject.id,
       };
-      if (includeBranch) payload.branch = effectiveBranch;
+      if (includeBranch) payload.branch = subjectRow.branch;
 
       const { data: created, error: insErr } = await supabase
         .from("faculty_subjects")

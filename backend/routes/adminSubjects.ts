@@ -2,6 +2,13 @@ import express from "express";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { readAuthTokenFromRequest, verifyAuthToken } from "./authToken.ts";
 import { requireUserByFacultyId } from "./supabaseUtils.ts";
+import {
+  isMissingSubjectMasterTableError,
+  normalizeDepartment,
+  normalizeSemester,
+  normalizeSubjectMasterInput,
+  normalizeYear,
+} from "./subjectMaster.ts";
 
 function norm(v: any) {
   return String(v || "").trim();
@@ -9,6 +16,10 @@ function norm(v: any) {
 
 function normUpper(v: any) {
   return norm(v).toUpperCase();
+}
+
+function legacySelect() {
+  return "id,regulation,department,branch,year,semester,subject_name,subject_code";
 }
 
 export function createAdminSubjectsRouter(supabase: SupabaseClient) {
@@ -50,15 +61,16 @@ export function createAdminSubjectsRouter(supabase: SupabaseClient) {
       if (!admin) return;
 
       const regulation = normUpper(req.query.regulation);
-      const department = norm(req.query.department);
+      const department = normalizeDepartment(req.query.department);
       const branch = normUpper(req.query.branch);
-      const year = normUpper(req.query.year);
-      const semester = norm(req.query.semester);
+      const year = normalizeYear(req.query.year);
+      const semester = normalizeSemester(req.query.semester);
       const q = norm(req.query.q);
+      const is_active = norm(req.query.is_active);
 
       let query = supabase
-        .from("subjects")
-        .select("id,regulation,department,branch,year,semester,subject_name,subject_code")
+        .from("subject_master")
+        .select("id,regulation,department,branch,year,semester,subject_name,subject_code,is_active,created_at,updated_at")
         .order("regulation", { ascending: true })
         .order("department", { ascending: true })
         .order("branch", { ascending: true })
@@ -72,12 +84,51 @@ export function createAdminSubjectsRouter(supabase: SupabaseClient) {
       if (branch) query = query.eq("branch", branch);
       if (year) query = query.eq("year", year);
       if (semester) query = query.eq("semester", semester);
+      if (is_active === "true") query = query.eq("is_active", true);
+      if (is_active === "false") query = query.eq("is_active", false);
       if (q) {
         const like = `%${q.replace(/%/g, "")}%`;
         query = query.or(`subject_name.ilike.${like},subject_code.ilike.${like}`);
       }
 
       const { data, error } = await query;
+      if (error && isMissingSubjectMasterTableError(error)) {
+        let legacyQuery = supabase
+          .from("subjects")
+          .select(legacySelect())
+          .order("regulation", { ascending: true })
+          .order("department", { ascending: true })
+          .order("branch", { ascending: true })
+          .order("year", { ascending: true })
+          .order("semester", { ascending: true })
+          .order("subject_name", { ascending: true })
+          .limit(500);
+
+        if (regulation) legacyQuery = legacyQuery.eq("regulation", regulation);
+        if (department) legacyQuery = legacyQuery.eq("department", department);
+        if (branch) legacyQuery = legacyQuery.eq("branch", branch);
+        if (semester) legacyQuery = legacyQuery.eq("semester", semester);
+        if (year && department !== "H&S") legacyQuery = legacyQuery.eq("year", year);
+        if (q) {
+          const like = `%${q.replace(/%/g, "")}%`;
+          legacyQuery = legacyQuery.or(`subject_name.ilike.${like},subject_code.ilike.${like}`);
+        }
+
+        const { data: legacyData, error: legacyError } = await legacyQuery;
+        if (legacyError) return res.status(400).json({ error: legacyError.message });
+        return res.json({
+          success: true,
+          subjects: (legacyData || []).map((row: any) => ({
+            ...row,
+            year: row?.year || (String(row?.department || "").trim() === "H&S" ? "I" : row?.year || ""),
+            branch: row?.branch || (String(row?.department || "").trim() === "H&S" ? "" : String(row?.department || "").trim()),
+            is_active: true,
+            created_at: null,
+            updated_at: null,
+          })),
+          warning: "Using legacy subjects table. Run the subject_master migration when convenient.",
+        });
+      }
       if (error) return res.status(400).json({ error: error.message });
       res.json({ success: true, subjects: data || [] });
     } catch (error: any) {
@@ -91,44 +142,85 @@ export function createAdminSubjectsRouter(supabase: SupabaseClient) {
       if (!admin) return;
 
       const body = (req.body || {}) as any;
-      const regulation = normUpper(body.regulation);
-      const department = norm(body.department);
-      const semester = norm(body.semester);
-      const subject_name = norm(body.subject_name);
-      const subject_code = normUpper(body.subject_code);
-      let year = normUpper(body.year);
-      let branch = normUpper(body.branch);
+      const normalized = normalizeSubjectMasterInput(body);
+      if ("error" in normalized) return res.status(400).json({ error: normalized.error });
 
-      if (!regulation) return res.status(400).json({ error: "regulation is required" });
-      if (!department) return res.status(400).json({ error: "department is required" });
-      if (!semester) return res.status(400).json({ error: "semester is required" });
-      if (!subject_name) return res.status(400).json({ error: "subject_name is required" });
-      if (!subject_code) return res.status(400).json({ error: "subject_code is required" });
+      const row = normalized.value;
+      const { data: duplicate, error: duplicateError } = await supabase
+        .from("subject_master")
+        .select("id")
+        .eq("regulation", row.regulation)
+        .eq("branch", row.branch)
+        .eq("year", row.year)
+        .eq("semester", row.semester)
+        .eq("subject_code", row.subject_code)
+        .limit(1)
+        .maybeSingle();
 
-      if (department === "H&S") {
-        year = "I";
-        if (!branch) return res.status(400).json({ error: "branch is required for H&S" });
-      } else {
-        branch = "";
-        if (!year) return res.status(400).json({ error: "year is required" });
+      if (duplicateError && isMissingSubjectMasterTableError(duplicateError)) {
+        const legacyRow = {
+          regulation: row.regulation,
+          department: row.department,
+          branch: row.branch,
+          year: row.department === "H&S" ? null : row.year,
+          semester: row.semester,
+          subject_name: row.subject_name,
+          subject_code: row.subject_code,
+        };
+
+        const { data: created, error: legacySaveError } = await supabase
+          .from("subjects")
+          .upsert(legacyRow, { onConflict: "regulation,department,branch,year,semester,subject_code" })
+          .select(legacySelect())
+          .single();
+
+        if (legacySaveError) return res.status(400).json({ error: legacySaveError.message });
+        if (!created || typeof created !== "object") {
+          return res.status(500).json({ error: "Legacy subject save did not return a row" });
+        }
+        const createdRow = created as Record<string, any>;
+        return res.json({
+          success: true,
+          subject: {
+            ...createdRow,
+            year: createdRow.year || (createdRow.department === "H&S" ? "I" : createdRow.year || ""),
+            is_active: true,
+            created_at: null,
+            updated_at: null,
+          },
+          warning: "Saved to legacy subjects table because subject_master is not available yet.",
+        });
+      }
+      if (duplicateError) return res.status(400).json({ error: duplicateError.message });
+      if (duplicate) {
+        const { data: existing, error: existingError } = await supabase
+          .from("subject_master")
+          .select("id,subject_name")
+          .eq("id", duplicate.id)
+          .maybeSingle();
+
+        if (existingError) return res.status(400).json({ error: existingError.message });
+        if (existing && String(existing.subject_name || "") !== row.subject_name) {
+          return res.status(400).json({ error: "Duplicate subject code already exists for the selected regulation, branch, year, and semester" });
+        }
       }
 
-      const row = {
-        regulation,
-        department,
-        branch,
-        year,
-        semester,
-        subject_name,
-        subject_code,
+      const payload = {
+        ...row,
+        updated_at: new Date().toISOString(),
       };
 
       const { data, error } = await supabase
-        .from("subjects")
-        .upsert(row, { onConflict: "regulation,department,branch,year,semester,subject_code" })
-        .select("id,regulation,department,branch,year,semester,subject_name,subject_code")
+        .from("subject_master")
+        .upsert(payload, { onConflict: "regulation,department,branch,year,semester,subject_code" })
+        .select("id,regulation,department,branch,year,semester,subject_name,subject_code,is_active,created_at,updated_at")
         .single();
 
+      if (error && isMissingSubjectMasterTableError(error)) {
+        return res.status(400).json({
+          error: "subject_master table is missing. Run the latest Supabase migration before using Admin Subject Management.",
+        });
+      }
       if (error) return res.status(400).json({ error: error.message });
       res.json({ success: true, subject: data });
     } catch (error: any) {
@@ -138,4 +230,3 @@ export function createAdminSubjectsRouter(supabase: SupabaseClient) {
 
   return router;
 }
-

@@ -983,6 +983,22 @@ function QuestionPaperForm({
 
 // --- Main App ---
 
+const SUBJECT_DEPARTMENTS = ['H&S', 'CSM', 'CSD', 'CSE', 'ECE'] as const;
+const SUBJECT_BRANCHES = ['CSM', 'CSD', 'CSE', 'ECE'] as const;
+const SUBJECT_SEMESTERS = ['I', 'II'] as const;
+
+const getBranchOptionsForDepartment = (department: string) => {
+  if (!department) return [...SUBJECT_BRANCHES];
+  if (department === 'H&S') return [...SUBJECT_BRANCHES];
+  return SUBJECT_BRANCHES.includes(department as any) ? [department as typeof SUBJECT_BRANCHES[number]] : [...SUBJECT_BRANCHES];
+};
+
+const getYearOptionsForDepartment = (department: string) => {
+  if (department === 'H&S') return ['I'];
+  if (department && department !== 'H&S') return ['II', 'III', 'IV'];
+  return ['I', 'II', 'III', 'IV'];
+};
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authToken, setAuthToken] = useState<string>('');
@@ -1117,7 +1133,7 @@ export default function App() {
   const [adminSubjectsLoading, setAdminSubjectsLoading] = useState(false);
   const [adminSubjectsError, setAdminSubjectsError] = useState<string | null>(null);
   const [adminSubjectsNotice, setAdminSubjectsNotice] = useState<string | null>(null);
-  const [adminSubjectsFilters, setAdminSubjectsFilters] = useState({ q: '', regulation: '', department: '', branch: '', year: '', semester: '' });
+  const [adminSubjectsFilters, setAdminSubjectsFilters] = useState({ q: '', regulation: '', department: 'H&S', branch: '', year: 'I', semester: '' });
   const [adminSubjectForm, setAdminSubjectForm] = useState({
     regulation: 'R25',
     department: 'H&S',
@@ -1155,6 +1171,8 @@ type EvalStudentListSummary = {
   file_name: string;
   count: number;
 };
+type EvalMarkRow = { descriptive: (number | null)[]; mcq: (number | null)[]; fb: (number | null)[]; assignment: (number | null)[] };
+type EvalPptRow = { mid1_total: number; mid2_total: number; ppt_marks: number; final_total: number };
 
   const compareRollNumbers = (a: string, b: string) => {
     const na = Number(a);
@@ -1182,6 +1200,10 @@ type EvalStudentListSummary = {
   };
 
   const normalizeAcademicDepartment = (value: string) => String(value || '').trim().toUpperCase();
+  const adminSubjectBranchOptions = useMemo(() => getBranchOptionsForDepartment(adminSubjectForm.department), [adminSubjectForm.department]);
+  const adminSubjectYearOptions = useMemo(() => getYearOptionsForDepartment(adminSubjectForm.department), [adminSubjectForm.department]);
+  const adminSubjectsFilterBranchOptions = useMemo(() => getBranchOptionsForDepartment(adminSubjectsFilters.department), [adminSubjectsFilters.department]);
+  const adminSubjectsFilterYearOptions = useMemo(() => getYearOptionsForDepartment(adminSubjectsFilters.department), [adminSubjectsFilters.department]);
 
   const sortStudentsByRollNumber = (students: EvalStudent[]) =>
     [...students].sort((x, y) => compareRollNumbers(x.roll_number, y.roll_number) || x.student_name.localeCompare(y.student_name));
@@ -1215,7 +1237,7 @@ type EvalStudentListSummary = {
   const [evalList, setEvalList] = useState<EvalStudentList | null>(null);
   const [evalLoading, setEvalLoading] = useState(false);
   const [evalError, setEvalError] = useState<string | null>(null);
-  const [evalStep, setEvalStep] = useState<'descriptive' | 'objective' | 'assignment'>('descriptive');
+  const [evalStep, setEvalStep] = useState<'descriptive' | 'objective' | 'assignment' | 'ppt'>('descriptive');
   const evalDescCoFallback = ['CO1', 'CO2', 'CO2', 'CO3', 'CO4', 'CO5'];
   const evalObjCoFallback = ['CO1', 'CO1', 'CO2', 'CO2', 'CO3', 'CO3', 'CO4', 'CO4', 'CO5', 'CO5'];
   const evalAssignmentCoFallback = ['CO1', 'CO2', 'CO3', 'CO4', 'CO5'];
@@ -1224,11 +1246,20 @@ type EvalStudentListSummary = {
   const [evalObjCoLabelsMcq, setEvalObjCoLabelsMcq] = useState<string[]>(evalObjCoFallback);
   const [evalObjCoLabelsFb, setEvalObjCoLabelsFb] = useState<string[]>(evalObjCoFallback);
   const [evalAssignmentCoLabels, setEvalAssignmentCoLabels] = useState<string[]>(evalAssignmentCoFallback);
-  const [evalMarks, setEvalMarks] = useState<Record<string, { descriptive: (number | null)[]; mcq: (number | null)[]; fb: (number | null)[]; assignment: (number | null)[] }>>({});
+  const [evalMarks, setEvalMarks] = useState<Record<string, EvalMarkRow>>({});
   const [evalDescriptiveErrors, setEvalDescriptiveErrors] = useState<Record<string, string>>({});
   const [evalSubmitted, setEvalSubmitted] = useState(false);
+  const [evalMarksSaved, setEvalMarksSaved] = useState(false);
   const [evalActiveFacultyId, setEvalActiveFacultyId] = useState<string>('');
   const [evalSubmissions, setEvalSubmissions] = useState<any[]>([]);
+  const [evalPptRows, setEvalPptRows] = useState<Record<string, EvalPptRow>>({});
+  const [evalPptMaxMarks, setEvalPptMaxMarks] = useState<number>(5);
+  const [evalPptEligibility, setEvalPptEligibility] = useState({
+    mid1Submitted: false,
+    mid2Submitted: false,
+    canEnterPpt: false,
+    finalSubmitted: false,
+  });
 
   const sumMarks = (values: Array<number | null | undefined>) =>
     (values || []).reduce((sum, v) => sum + (Number.isFinite(Number(v)) ? Number(v) : 0), 0);
@@ -1254,11 +1285,26 @@ type EvalStudentListSummary = {
     return parsed >= 1 ? 1 : 0;
   };
 
+  const normalizePptMark = (value: number | string | null | undefined, maxMarks = evalPptMaxMarks) => {
+    if (value === null || value === undefined || value === '') return 0;
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed)) return null;
+    if (parsed < 0 || parsed > maxMarks) return null;
+    return parsed;
+  };
+
   const makeEmptyEvalMarks = () => ({
     descriptive: Array(6).fill(null) as (number | null)[],
     mcq: Array(10).fill(null) as (number | null)[],
     fb: Array(10).fill(null) as (number | null)[],
     assignment: Array(5).fill(null) as (number | null)[],
+  });
+
+  const makeEmptyEvalPptRow = (): EvalPptRow => ({
+    mid1_total: 0,
+    mid2_total: 0,
+    ppt_marks: 0,
+    final_total: 0,
   });
 
   const getBestDescriptiveResult = (values: Array<number | null | undefined>) => {
@@ -1303,6 +1349,7 @@ type EvalStudentListSummary = {
   };
 
   const evalStudentsSorted = useMemo(() => (evalList ? sortStudentsByRollNumber(evalList.students || []) : []), [evalList]);
+  const evalCurrentMidIsMid2 = String(evalFilters.mid_type || '').trim() === 'Mid II';
   const [evalSubjects, setEvalSubjects] = useState<Subject[]>([]);
   const [evalSubjectsLoading, setEvalSubjectsLoading] = useState(false);
   const [evalSubjectsError, setEvalSubjectsError] = useState<string | null>(null);
@@ -1790,19 +1837,16 @@ type EvalStudentListSummary = {
       const payload: any = {
         regulation: adminSubjectForm.regulation,
         department: dept,
+        branch: adminSubjectForm.branch,
+        year: adminSubjectForm.year,
         semester: adminSubjectForm.semester,
         subject_name: adminSubjectForm.subject_name.trim(),
         subject_code: adminSubjectForm.subject_code.trim(),
       };
-      if (dept === 'H&S') {
-        if (!adminSubjectForm.branch) throw new Error('Branch is required for H&S');
-        payload.branch = adminSubjectForm.branch;
-        payload.year = 'I';
-      } else {
-        if (!adminSubjectForm.year) throw new Error('Year is required');
-        payload.year = adminSubjectForm.year;
-        payload.branch = '';
-      }
+      if (!adminSubjectForm.branch) throw new Error('Branch is required');
+      if (!adminSubjectForm.year) throw new Error('Year is required');
+      if (dept === 'H&S' && adminSubjectForm.year !== 'I') throw new Error('H&S subjects must belong to Year I');
+      if (dept !== 'H&S' && !['II', 'III', 'IV'].includes(adminSubjectForm.year)) throw new Error('Core departments support only Years II, III, and IV');
 
       const res = await apiFetch('/api/admin/subjects', {
         method: 'POST',
@@ -1849,23 +1893,20 @@ type EvalStudentListSummary = {
       }
 
       const facultyDept = String(faculty.department || '').trim();
-      const reg = String(adminAssignForm.regulation || '').toUpperCase();
-      const year = String(adminAssignForm.year || '').toUpperCase();
-      const effectiveDepartment = reg === 'R25' && year === 'I' ? 'H&S' : facultyDept;
-      const effectiveBranch = effectiveDepartment === 'H&S' ? (facultyDept === 'H&S' ? adminAssignForm.branch : facultyDept) : '';
+      const effectiveDepartment = facultyDept;
+      const effectiveBranch = effectiveDepartment === 'H&S' ? adminAssignForm.branch : facultyDept;
 
       const params = new URLSearchParams({
         regulation: adminAssignForm.regulation,
         semester: adminAssignForm.semester,
+        department: effectiveDepartment,
+        branch: effectiveBranch,
+        year: effectiveDepartment === 'H&S' ? 'I' : adminAssignForm.year,
       });
 
-      if (effectiveDepartment === 'H&S') {
-        params.set('department', 'H&S');
-        if (effectiveBranch) params.append('branch', effectiveBranch);
-        params.append('year', 'I');
-      } else {
-        params.set('department', effectiveDepartment);
-        params.append('year', adminAssignForm.year);
+      if (effectiveDepartment === 'H&S' && !effectiveBranch) {
+        setAdminAssignSubjects([]);
+        return;
       }
 
       setAdminAssignSubjectsLoading(true);
@@ -1895,11 +1936,10 @@ type EvalStudentListSummary = {
 
       const faculty = adminUsers.find((u) => u.faculty_id === adminAssignForm.faculty_id);
       const facultyDept = String(faculty?.department || '').trim();
-      const reg = String(adminAssignForm.regulation || '').toUpperCase();
-      const year = String(adminAssignForm.year || '').toUpperCase();
-      const effectiveDepartment = reg === 'R25' && year === 'I' ? 'H&S' : facultyDept;
-      const effectiveBranch = effectiveDepartment === 'H&S' ? (facultyDept === 'H&S' ? adminAssignForm.branch : facultyDept) : '';
+      const effectiveDepartment = facultyDept;
+      const effectiveBranch = effectiveDepartment === 'H&S' ? adminAssignForm.branch : facultyDept;
       if (effectiveDepartment === 'H&S' && !effectiveBranch) throw new Error('Select a branch for H&S');
+      if (effectiveDepartment !== 'H&S' && !['II', 'III', 'IV'].includes(adminAssignForm.year)) throw new Error('Core departments support only Years II, III, and IV');
 
       const res = await apiFetch('/api/admin/faculty-subjects', {
         method: 'POST',
@@ -2448,8 +2488,11 @@ type EvalStudentListSummary = {
     setEvalError(null);
     setEvalList(null);
     setEvalMarks({});
+    setEvalPptRows({});
+    setEvalPptEligibility({ mid1Submitted: false, mid2Submitted: false, canEnterPpt: false, finalSubmitted: false });
     setEvalStep('descriptive');
     setEvalSubmitted(false);
+    setEvalMarksSaved(false);
     setEvalActiveFacultyId(opts?.activeFacultyId || user.faculty_id);
 
     setEvalLoading(true);
@@ -2468,18 +2511,23 @@ type EvalStudentListSummary = {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || 'Failed to load student list');
       setEvalList(data.list);
+      const effectiveSemester = String(data?.list?.semester || data?.matchedSemester || filters.semester || '').trim();
+      const activeFilters = effectiveSemester && effectiveSemester !== filters.semester ? { ...filters, semester: effectiveSemester } : filters;
+      if (effectiveSemester && effectiveSemester !== evalFilters.semester) {
+        setEvalFilters((prev) => ({ ...prev, semester: effectiveSemester }));
+      }
 
       // Prefill CO labels from latest approved paper (if exists).
-      if (filters.subject_code) {
+      if (activeFilters.subject_code) {
         try {
           const paperQs = new URLSearchParams({
             department: activeDepartment,
-            ...(activeIsHS ? { branch: filters.branch } : {}),
-            regulation: filters.regulation,
-            year: filters.year,
-            semester: filters.semester,
-            mid_exam_type: filters.mid_type,
-            subject_code: filters.subject_code,
+            ...(activeIsHS ? { branch: activeFilters.branch } : {}),
+            regulation: activeFilters.regulation,
+            year: activeFilters.year,
+            semester: activeFilters.semester,
+            mid_exam_type: activeFilters.mid_type,
+            subject_code: activeFilters.subject_code,
             status: 'Approved',
           });
           const pRes = await fetch(`/api/papers?${paperQs.toString()}`);
@@ -2497,16 +2545,16 @@ type EvalStudentListSummary = {
       }
 
       // Load previously saved marks (if any).
-      if (filters.mid_type && filters.subject_code) {
+      if (activeFilters.mid_type && activeFilters.subject_code) {
         const mQs = new URLSearchParams({
           department: activeDepartment,
-          ...(activeIsHS ? { branch: filters.branch } : {}),
-          regulation: filters.regulation,
-          year: filters.year,
-          semester: filters.semester,
-          section: filters.section,
-          mid_type: filters.mid_type,
-          subject_code: filters.subject_code,
+          ...(activeIsHS ? { branch: activeFilters.branch } : {}),
+          regulation: activeFilters.regulation,
+          year: activeFilters.year,
+          semester: activeFilters.semester,
+          section: activeFilters.section,
+          mid_type: activeFilters.mid_type,
+          subject_code: activeFilters.subject_code,
         });
         const mRes = await fetch(`/api/eval/marks?${mQs.toString()}`);
         const mData = await mRes.json().catch(() => ({}));
@@ -2531,6 +2579,43 @@ type EvalStudentListSummary = {
             };
           }
           setEvalMarks(next);
+          setEvalMarksSaved(mData.marks.length > 0);
+        }
+      }
+
+      if (activeFilters.subject_code) {
+        const finalQs = new URLSearchParams({
+          department: activeDepartment,
+          ...(activeIsHS ? { branch: activeFilters.branch } : {}),
+          regulation: activeFilters.regulation,
+          year: activeFilters.year,
+          semester: activeFilters.semester,
+          section: activeFilters.section,
+          subject_code: activeFilters.subject_code,
+        });
+        const finalRes = await fetch(`/api/eval/final-marks?${finalQs.toString()}`);
+        const finalData = await finalRes.json().catch(() => ({}));
+        if (finalRes.ok) {
+          setEvalPptEligibility({
+            mid1Submitted: Boolean(finalData?.mid1Submitted),
+            mid2Submitted: Boolean(finalData?.mid2Submitted),
+            canEnterPpt: Boolean(finalData?.canEnterPpt),
+            finalSubmitted: Boolean(finalData?.finalSubmitted),
+          });
+          setEvalPptMaxMarks(Number(finalData?.pptMaxMarks || 5));
+          const nextPpt: Record<string, EvalPptRow> = {};
+          for (const row of Array.isArray(finalData?.rows) ? finalData.rows : []) {
+            nextPpt[String(row.roll_number || '')] = {
+              mid1_total: Number(row?.mid1_total || 0),
+              mid2_total: Number(row?.mid2_total || 0),
+              ppt_marks: Number(row?.ppt_marks || 0),
+              final_total: Number(row?.final_total || 0),
+            };
+          }
+          setEvalPptRows(nextPpt);
+        } else {
+          setEvalPptEligibility({ mid1Submitted: false, mid2Submitted: false, canEnterPpt: false, finalSubmitted: false });
+          setEvalPptRows({});
         }
       }
 
@@ -2609,6 +2694,34 @@ type EvalStudentListSummary = {
     setEvalAssignmentCoLabels((prev) => prev.map((label, labelIndex) => (labelIndex === index ? value : label)));
   };
 
+  const updateEvalPptMark = (roll: string, value: string) => {
+    const errorKey = `${roll}:ppt:0`;
+    const normalized = value === '' ? 0 : normalizePptMark(value, evalPptMaxMarks);
+    if (normalized === null) {
+      setEvalDescriptiveErrors((prev) => ({ ...prev, [errorKey]: `PPT marks must be between 0 and ${evalPptMaxMarks}` }));
+      return;
+    }
+
+    setEvalDescriptiveErrors((prev) => {
+      const next = { ...prev };
+      delete next[errorKey];
+      return next;
+    });
+
+    setEvalPptRows((prev) => {
+      const existing = prev[roll] || makeEmptyEvalPptRow();
+      const ppt_marks = Number(normalized || 0);
+      return {
+        ...prev,
+        [roll]: {
+          ...existing,
+          ppt_marks,
+          final_total: Number(existing.mid1_total || 0) + Number(existing.mid2_total || 0) + ppt_marks,
+        },
+      };
+    });
+  };
+
   const saveEvaluationMarks = async () => {
     if (!user) return;
     if (!evalList) return;
@@ -2653,9 +2766,10 @@ type EvalStudentListSummary = {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || 'Failed to save marks');
+      setEvalMarksSaved(true);
       alert(`Saved marks for ${data?.saved || entries.length} students.`);
     } catch (e: any) {
-      setEvalError(e?.message || 'Save failed');
+      setEvalError(e?.message || 'Save failed. Please check the backend console for details.');
     } finally {
       setEvalLoading(false);
     }
@@ -2692,9 +2806,88 @@ type EvalStudentListSummary = {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || 'Submit failed');
       setEvalSubmitted(true);
+      await loadEvaluationStudentList({ activeFacultyId: user.faculty_id, filters: evalFilters });
       alert('Submitted to HOD successfully.');
     } catch (e: any) {
       setEvalError(e?.message || 'Submit failed');
+    } finally {
+      setEvalLoading(false);
+    }
+  };
+
+  const saveEvaluationPptMarks = async () => {
+    if (!user || !evalList) return;
+    if (!evalPptEligibility.canEnterPpt) {
+      setEvalError('PPT marks can be entered only after Mid 1 and Mid 2 submission.');
+      return;
+    }
+    setEvalLoading(true);
+    setEvalError(null);
+    try {
+      const entries = evalStudentsSorted.map((s) => {
+        const row = evalPptRows[s.roll_number] || makeEmptyEvalPptRow();
+        return {
+          roll_number: s.roll_number,
+          student_name: s.student_name,
+          ppt_marks: Number(row.ppt_marks || 0),
+        };
+      });
+
+      const res = await fetch('/api/eval/final-marks/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          faculty_id: evalActiveFacultyId || user.faculty_id,
+          actor_id: user.faculty_id,
+          department: evalDepartment || user.department,
+          branch: evalDepartment === 'H&S' ? evalFilters.branch : '',
+          regulation: evalFilters.regulation,
+          year: evalFilters.year,
+          semester: evalFilters.semester,
+          section: evalFilters.section,
+          subject_name: evalFilters.subject_name,
+          subject_code: evalFilters.subject_code,
+          ppt_max_marks: evalPptMaxMarks,
+          entries,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to save PPT marks');
+      await loadEvaluationStudentList({ activeFacultyId: evalActiveFacultyId || user.faculty_id, filters: evalFilters });
+      alert(`Saved PPT marks for ${data?.saved || entries.length} students.`);
+    } catch (e: any) {
+      setEvalError(e?.message || 'Failed to save PPT marks');
+    } finally {
+      setEvalLoading(false);
+    }
+  };
+
+  const submitFinalEvaluationMarks = async () => {
+    if (!user || user.role !== 'FACULTY') return;
+    if (!evalList) return;
+    setEvalLoading(true);
+    setEvalError(null);
+    try {
+      const res = await fetch('/api/eval/final-marks/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          faculty_id: user.faculty_id,
+          department: evalDepartment || user.department,
+          branch: evalDepartment === 'H&S' ? evalFilters.branch : '',
+          regulation: evalFilters.regulation,
+          year: evalFilters.year,
+          semester: evalFilters.semester,
+          section: evalFilters.section,
+          subject_code: evalFilters.subject_code,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Failed to submit final marks');
+      await loadEvaluationStudentList({ activeFacultyId: user.faculty_id, filters: evalFilters });
+      alert('Submitted final marks successfully.');
+    } catch (e: any) {
+      setEvalError(e?.message || 'Failed to submit final marks');
     } finally {
       setEvalLoading(false);
     }
@@ -2722,16 +2915,34 @@ type EvalStudentListSummary = {
       ...Array.from({ length: 5 }, (_, i) => `A${i + 1} (${(evalAssignmentCoLabels[i] || assignmentCO[i])})`),
       'Assignment Total',
       'Grand Total',
+      'Mid 1 Total',
+      'Mid 2 Total',
+      'PPT Marks',
+      'Final Total',
     ];
 
     const rows = evalStudentsSorted.map((s) => {
       const m = evalMarks[s.roll_number] || makeEmptyEvalMarks();
+      const ppt = evalPptRows[s.roll_number] || makeEmptyEvalPptRow();
       const desc = m.descriptive.map((v) => (v ?? ''));
       const mcq = m.mcq.map((v) => (v ?? ''));
       const fb = m.fb.map((v) => (v ?? ''));
       const assignment = m.assignment.map((v) => (v ?? ''));
       const totals = getEvaluationTotals(m);
-      return [s.roll_number, s.student_name, ...desc, ...mcq, ...fb, ...assignment, totals.assignmentTotal, totals.finalTotal];
+      return [
+        s.roll_number,
+        s.student_name,
+        ...desc,
+        ...mcq,
+        ...fb,
+        ...assignment,
+        totals.assignmentTotal,
+        totals.finalTotal,
+        ppt.mid1_total,
+        ppt.mid2_total,
+        ppt.ppt_marks,
+        ppt.final_total,
+      ];
     });
 
     return [...headers, tableHeader, ...rows];
@@ -2806,6 +3017,24 @@ type EvalStudentListSummary = {
     } finally {
       setEvalLoading(false);
     }
+  };
+
+  const inferHodSubmissionSemester = (submission: any) => {
+    const explicit = String(submission?.semester || '').trim();
+    if (explicit) return explicit;
+
+    const matches = hodStudentLists.filter((list) =>
+      String(list.department || '').trim() === String(submission?.department || user?.department || '').trim() &&
+      String(list.branch || '').trim().toUpperCase() === String(submission?.branch || '').trim().toUpperCase() &&
+      String(list.regulation || '').trim().toUpperCase() === String(submission?.regulation || '').trim().toUpperCase() &&
+      String(list.year || '').trim().toUpperCase() === String(submission?.year || '').trim().toUpperCase() &&
+      String(list.section || '').trim().toUpperCase() === String(submission?.section || '').trim().toUpperCase() &&
+      String(list.semester || '').trim(),
+    );
+
+    if (matches.length === 1) return matches[0].semester;
+    if (matches.length > 1) return matches[0].semester;
+    return evalFilters.semester || evalUploadFilters.semester || 'I';
   };
 
   useEffect(() => {
@@ -4196,9 +4425,20 @@ type EvalStudentListSummary = {
                       <Select
                         label="Faculty Name"
                         value={adminAssignForm.faculty_id}
-                        onChange={(e: any) =>
-                          setAdminAssignForm((p) => ({ ...p, faculty_id: e.target.value, branch: '', subject_name: '', subject_code: '' }))
-                        }
+                        onChange={(e: any) => {
+                          const faculty_id = e.target.value;
+                          const faculty = adminUsers.find((u) => u.faculty_id === faculty_id);
+                          const facultyDept = String(faculty?.department || '').trim();
+                          const nextYears = getYearOptionsForDepartment(facultyDept);
+                          setAdminAssignForm((p) => ({
+                            ...p,
+                            faculty_id,
+                            branch: '',
+                            year: nextYears.includes(p.year) ? p.year : nextYears[0],
+                            subject_name: '',
+                            subject_code: '',
+                          }));
+                        }}
                         options={[
                           { label: 'Select Faculty', value: '' },
                           ...(adminUsers || [])
@@ -4224,20 +4464,16 @@ type EvalStudentListSummary = {
                     {(() => {
                       const faculty = adminUsers.find((u) => u.faculty_id === adminAssignForm.faculty_id);
                       const facultyDept = String(faculty?.department || '').trim();
-                      const reg = String(adminAssignForm.regulation || '').toUpperCase();
-                      const year = String(adminAssignForm.year || '').toUpperCase();
-                      const effectiveDepartment = reg === 'R25' && year === 'I' ? 'H&S' : facultyDept;
-                      const mustPickBranch = effectiveDepartment === 'H&S' && facultyDept === 'H&S';
-                      const lockedBranch = effectiveDepartment === 'H&S' && facultyDept !== 'H&S' ? facultyDept : '';
+                      const effectiveDepartment = facultyDept;
+                      const mustPickBranch = effectiveDepartment === 'H&S';
                       if (effectiveDepartment !== 'H&S') return null;
                       return (
                         <Select
                           label="Branch"
-                          value={lockedBranch || adminAssignForm.branch}
-                          disabled={Boolean(lockedBranch)}
+                          value={adminAssignForm.branch}
                           onChange={(e: any) => setAdminAssignForm((p) => ({ ...p, branch: e.target.value, subject_name: '', subject_code: '' }))}
                           options={[
-                            { label: mustPickBranch ? 'Select Branch' : lockedBranch || 'Branch', value: '' },
+                            { label: mustPickBranch ? 'Select Branch' : 'Branch', value: '' },
                             { label: 'CSE', value: 'CSE' },
                             { label: 'CSD', value: 'CSD' },
                             { label: 'CSM', value: 'CSM' },
@@ -4265,12 +4501,12 @@ type EvalStudentListSummary = {
                         onChange={(e: any) =>
                           setAdminAssignForm((p) => ({ ...p, year: e.target.value, branch: '', subject_name: '', subject_code: '' }))
                         }
-                        options={[
-                          { label: 'I', value: 'I' },
-                          { label: 'II', value: 'II' },
-                          { label: 'III', value: 'III' },
-                          { label: 'IV', value: 'IV' },
-                        ]}
+                        options={(() => {
+                          const faculty = adminUsers.find((u) => u.faculty_id === adminAssignForm.faculty_id);
+                          const facultyDept = String(faculty?.department || '').trim();
+                          const years = getYearOptionsForDepartment(facultyDept);
+                          return years.map((year) => ({ label: year, value: year }));
+                        })()}
                       />
 
                       <Select
@@ -4460,11 +4696,13 @@ type EvalStudentListSummary = {
                           value={adminSubjectForm.department}
                           onChange={(e: any) => {
                             const dept = e.target.value;
+                            const nextBranches = getBranchOptionsForDepartment(dept);
+                            const nextYears = getYearOptionsForDepartment(dept);
                             setAdminSubjectForm((p) => ({
                               ...p,
                               department: dept,
-                              year: dept === 'H&S' ? 'I' : (p.year === 'I' ? 'II' : p.year),
-                              branch: dept === 'H&S' ? (p.branch || 'CSE') : '',
+                              year: nextYears.includes(p.year) ? p.year : nextYears[0],
+                              branch: nextBranches.includes(p.branch as any) ? p.branch : nextBranches[0],
                             }));
                           }}
                           options={[
@@ -4476,30 +4714,19 @@ type EvalStudentListSummary = {
                           ]}
                         />
 
-                        {adminSubjectForm.department === 'H&S' ? (
-                          <Select
-                            label="Branch"
-                            value={adminSubjectForm.branch}
-                            onChange={(e: any) => setAdminSubjectForm((p) => ({ ...p, branch: e.target.value }))}
-                            options={[
-                              { label: 'CSE', value: 'CSE' },
-                              { label: 'CSD', value: 'CSD' },
-                              { label: 'CSM', value: 'CSM' },
-                              { label: 'ECE', value: 'ECE' },
-                            ]}
-                          />
-                        ) : (
-                          <Select
-                            label="Year"
-                            value={adminSubjectForm.year}
-                            onChange={(e: any) => setAdminSubjectForm((p) => ({ ...p, year: e.target.value }))}
-                            options={[
-                              { label: 'II', value: 'II' },
-                              { label: 'III', value: 'III' },
-                              { label: 'IV', value: 'IV' },
-                            ]}
-                          />
-                        )}
+                        <Select
+                          label="Branch"
+                          value={adminSubjectForm.branch}
+                          onChange={(e: any) => setAdminSubjectForm((p) => ({ ...p, branch: e.target.value }))}
+                          options={adminSubjectBranchOptions.map((branch) => ({ label: branch, value: branch }))}
+                        />
+
+                        <Select
+                          label="Year"
+                          value={adminSubjectForm.year}
+                          onChange={(e: any) => setAdminSubjectForm((p) => ({ ...p, year: e.target.value }))}
+                          options={adminSubjectYearOptions.map((year) => ({ label: year, value: year }))}
+                        />
 
                         <Select
                           label="Semester"
@@ -4552,7 +4779,17 @@ type EvalStudentListSummary = {
                           <div className="w-28">
                             <Select
                               value={adminSubjectsFilters.department}
-                              onChange={(e: any) => setAdminSubjectsFilters((p) => ({ ...p, department: e.target.value, branch: '' }))}
+                              onChange={(e: any) => {
+                                const department = e.target.value;
+                                const nextBranches = getBranchOptionsForDepartment(department);
+                                const nextYears = getYearOptionsForDepartment(department);
+                                setAdminSubjectsFilters((p) => ({
+                                  ...p,
+                                  department,
+                                  branch: department ? (nextBranches.includes(p.branch as any) ? p.branch : nextBranches[0]) : '',
+                                  year: department ? (nextYears.includes(p.year) ? p.year : nextYears[0]) : '',
+                                }));
+                              }}
                               options={[
                                 { label: 'All Depts', value: '' },
                                 { label: 'H&S', value: 'H&S' },
@@ -4563,21 +4800,36 @@ type EvalStudentListSummary = {
                               ]}
                             />
                           </div>
-                          {adminSubjectsFilters.department === 'H&S' && (
-                            <div className="w-28">
-                              <Select
-                                value={adminSubjectsFilters.branch}
-                                onChange={(e: any) => setAdminSubjectsFilters((p) => ({ ...p, branch: e.target.value }))}
-                                options={[
-                                  { label: 'All', value: '' },
-                                  { label: 'CSE', value: 'CSE' },
-                                  { label: 'CSD', value: 'CSD' },
-                                  { label: 'CSM', value: 'CSM' },
-                                  { label: 'ECE', value: 'ECE' },
-                                ]}
-                              />
-                            </div>
-                          )}
+                          <div className="w-28">
+                            <Select
+                              value={adminSubjectsFilters.branch}
+                              onChange={(e: any) => setAdminSubjectsFilters((p) => ({ ...p, branch: e.target.value }))}
+                              options={[
+                                { label: 'All Branches', value: '' },
+                                ...adminSubjectsFilterBranchOptions.map((branch) => ({ label: branch, value: branch })),
+                              ]}
+                            />
+                          </div>
+                          <div className="w-24">
+                            <Select
+                              value={adminSubjectsFilters.year}
+                              onChange={(e: any) => setAdminSubjectsFilters((p) => ({ ...p, year: e.target.value }))}
+                              options={[
+                                { label: 'All Years', value: '' },
+                                ...adminSubjectsFilterYearOptions.map((year) => ({ label: year, value: year })),
+                              ]}
+                            />
+                          </div>
+                          <div className="w-24">
+                            <Select
+                              value={adminSubjectsFilters.semester}
+                              onChange={(e: any) => setAdminSubjectsFilters((p) => ({ ...p, semester: e.target.value }))}
+                              options={[
+                                { label: 'All Sems', value: '' },
+                                ...SUBJECT_SEMESTERS.map((semester) => ({ label: semester, value: semester })),
+                              ]}
+                            />
+                          </div>
                           <Button variant="secondary" onClick={fetchAdminSubjects} disabled={adminSubjectsLoading}>
                             {adminSubjectsLoading ? 'Loading...' : 'Refresh'}
                           </Button>
@@ -4616,8 +4868,8 @@ type EvalStudentListSummary = {
                                     setAdminSubjectForm({
                                       regulation: s.regulation,
                                       department: s.department,
-                                      branch: String((s as any).branch || '') || 'CSE',
-                                      year: (s as any).year || 'II',
+                                      branch: String((s as any).branch || ''),
+                                      year: (s as any).year || '',
                                       semester: s.semester,
                                       subject_name: s.subject_name,
                                       subject_code: s.subject_code,
@@ -5205,11 +5457,13 @@ type EvalStudentListSummary = {
                                 <Button
                                   variant="secondary"
                                   onClick={async () => {
+                                    const semester = inferHodSubmissionSemester(s);
                                     const nextFilters = {
                                       ...evalFilters,
                                       department: s.department,
                                       regulation: s.regulation,
                                       year: s.year,
+                                      semester,
                                       section: s.section,
                                       branch: s.branch || evalFilters.branch,
                                       mid_type: s.mid_type,
@@ -5388,10 +5642,17 @@ type EvalStudentListSummary = {
                       Student List: {evalList.regulation} • {evalList.year} • {evalList.branch ? `Branch ${evalList.branch} • ` : ''}Sec {evalList.section}
                     </div>
                     <div className="flex gap-2">
-                      <Button onClick={saveEvaluationMarks} disabled={evalLoading}>
-                        <Save size={18} />
-                        Save Marks
-                      </Button>
+                      {evalStep === 'ppt' ? (
+                        <Button onClick={saveEvaluationPptMarks} disabled={evalLoading}>
+                          <Save size={18} />
+                          Save PPT
+                        </Button>
+                      ) : (
+                        <Button onClick={saveEvaluationMarks} disabled={evalLoading}>
+                          <Save size={18} />
+                          Save Marks
+                        </Button>
+                      )}
                       {evalStep === 'descriptive' ? (
                         <Button variant="secondary" onClick={() => setEvalStep('objective')}>Next: Objective</Button>
                       ) : evalStep === 'objective' ? (
@@ -5399,16 +5660,29 @@ type EvalStudentListSummary = {
                           <Button variant="secondary" onClick={() => setEvalStep('descriptive')}>Back: Descriptive</Button>
                           <Button variant="secondary" onClick={() => setEvalStep('assignment')}>Next: Assignment</Button>
                         </>
+                      ) : evalStep === 'assignment' ? (
+                        <>
+                          <Button variant="secondary" onClick={() => setEvalStep('objective')}>Back: Objective</Button>
+                          {evalCurrentMidIsMid2 && evalPptEligibility.canEnterPpt && (
+                            <Button variant="secondary" onClick={() => setEvalStep('ppt')}>Next: PPT Marks</Button>
+                          )}
+                        </>
                       ) : (
-                        <Button variant="secondary" onClick={() => setEvalStep('objective')}>Back: Objective</Button>
+                        <Button variant="secondary" onClick={() => setEvalStep('assignment')}>Back: Assignment</Button>
                       )}
-                      {user.role === 'FACULTY' && (
+                      {user.role === 'FACULTY' && evalStep !== 'ppt' && (
                         <Button variant="success" onClick={submitEvaluation} disabled={evalLoading}>
                           <Send size={18} />
                           Submit
                         </Button>
                       )}
-                      {(evalSubmitted || user.role === 'HOD') && (
+                      {user.role === 'FACULTY' && evalStep === 'ppt' && (
+                        <Button variant="success" onClick={submitFinalEvaluationMarks} disabled={evalLoading}>
+                          <Send size={18} />
+                          Submit Final Marks
+                        </Button>
+                      )}
+                      {evalList && (
                         <>
                           <Button variant="secondary" onClick={downloadEvaluationExcel}>
                             <Download size={18} />
@@ -5422,6 +5696,12 @@ type EvalStudentListSummary = {
                       )}
                     </div>
                   </div>
+
+                  {evalCurrentMidIsMid2 && !evalPptEligibility.canEnterPpt && (
+                    <div className="px-6 py-4 border-b border-primary/10 bg-amber-50 text-amber-700 text-sm">
+                      PPT marks can be entered only after Mid 1 and Mid 2 submission.
+                    </div>
+                  )}
 
                   {evalStep === 'descriptive' && (
                     <div className="space-y-3">
@@ -5689,6 +5969,64 @@ type EvalStudentListSummary = {
                                   })}
                                   <td className="px-4 py-3 text-sm font-bold text-center text-black">{totals.assignmentTotal}</td>
                                   <td className="px-4 py-3 text-sm font-bold text-center text-black">{totals.finalTotal}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+
+                  {evalStep === 'ppt' && (
+                    <div className="p-6 space-y-4">
+                      <div className="font-bold text-black">Part IV - PPT Marks</div>
+                      <div className="text-sm text-black/60">
+                        Enter PPT marks after Mid 1 and Mid 2 are submitted. Final Total updates live as Mid 1 + Mid 2 + PPT.
+                      </div>
+                      <div className="text-xs text-primary/60">
+                        PPT marks range: 0 to {evalPptMaxMarks}.
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left">
+                          <thead>
+                            <tr className="bg-primary-light/10 text-primary/60 text-xs uppercase tracking-wider font-semibold">
+                              <th className="px-4 py-3">Roll No</th>
+                              <th className="px-4 py-3">Student Name</th>
+                              <th className="px-4 py-3 text-center">Mid 1 Total</th>
+                              <th className="px-4 py-3 text-center">Mid 2 Total</th>
+                              <th className="px-4 py-3 text-center">PPT Marks</th>
+                              <th className="px-4 py-3 text-center">Final Total</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-primary/5">
+                            {evalStudentsSorted.map((s) => {
+                              const row = evalPptRows[s.roll_number] || makeEmptyEvalPptRow();
+                              const errorKey = `${s.roll_number}:ppt:0`;
+                              const fieldError = evalDescriptiveErrors[errorKey];
+                              return (
+                                <tr key={s.roll_number} className="hover:bg-primary-light/10">
+                                  <td className="px-4 py-3 text-sm font-medium text-black">{s.roll_number}</td>
+                                  <td className="px-4 py-3 text-sm text-black/80">{s.student_name}</td>
+                                  <td className="px-4 py-3 text-sm text-center text-black">{row.mid1_total}</td>
+                                  <td className="px-4 py-3 text-sm text-center text-black">{row.mid2_total}</td>
+                                  <td className="px-4 py-3 text-center">
+                                    <div className="inline-flex flex-col items-center gap-1">
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        max={evalPptMaxMarks}
+                                        step="0.5"
+                                        className={`w-24 px-2 py-1 border rounded-lg text-sm text-center transition-colors ${
+                                          fieldError ? 'border-red-500 bg-red-50 text-red-700' : 'border-primary/10'
+                                        }`}
+                                        value={row.ppt_marks}
+                                        onChange={(e) => updateEvalPptMark(s.roll_number, e.target.value)}
+                                      />
+                                      {fieldError && <div className="text-[10px] text-red-600">{fieldError}</div>}
+                                    </div>
+                                  </td>
+                                  <td className="px-4 py-3 text-sm font-bold text-center text-black">{row.final_total}</td>
                                 </tr>
                               );
                             })}

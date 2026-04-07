@@ -48,22 +48,27 @@ function parseCsv(csvText) {
 }
 
 const rows = parseCsv(text).map((r) => ({
-  regulation: String(r.regulation || "").trim(),
-  department: String(r.department || "").trim(),
-  year: String(r.year || "").trim() || null,
-  semester: String(r.semester || "").trim(),
+  regulation: String(r.regulation || "").trim().toUpperCase(),
+  department: String(r.department || "").trim().toUpperCase() === "H&S" ? "H&S" : String(r.department || "").trim().toUpperCase(),
+  year: String(r.department || "").trim().toUpperCase() === "H&S" ? "I" : String(r.year || "").trim().toUpperCase(),
+  semester: String(r.semester || "").trim().replace(/^SEM(?:ESTER)?\s*/i, "").toUpperCase(),
   subject_name: String(r.subject_name || "").trim(),
-  subject_code: String(r.subject_code || "").trim(),
-  branch: String(r.branch || "").trim(),
+  subject_code: String(r.subject_code || "").trim().toUpperCase(),
+  branch: (() => {
+    const department = String(r.department || "").trim().toUpperCase();
+    const branch = String(r.branch || "").trim().toUpperCase();
+    return department === "H&S" ? branch : (branch || department);
+  })(),
+  is_active: String(r.is_active || "true").trim().toLowerCase() !== "false",
 }));
 
-const valid = rows.filter((r) => r.regulation && r.department && r.semester && r.subject_name && r.subject_code);
+const valid = rows.filter((r) => r.regulation && r.department && r.branch && r.year && r.semester && r.subject_name && r.subject_code);
 if (!valid.length) {
   console.error("No valid rows. Check CSV header/values.");
   process.exit(1);
 }
 
-const { error } = await supabase.from("subjects").upsert(valid, {
+const { error } = await supabase.from("subject_master").upsert(valid, {
   onConflict: "regulation,department,branch,year,semester,subject_code",
 });
 

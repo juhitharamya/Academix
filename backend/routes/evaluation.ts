@@ -33,6 +33,13 @@ function normalizeSemester(input: any) {
   return String(input || "").trim().toUpperCase();
 }
 
+function normalizeMidType(input: any) {
+  const value = String(input || "").trim();
+  if (value === "Mid1") return "Mid I";
+  if (value === "Mid2") return "Mid II";
+  return value;
+}
+
 function toNumOrNull(v: any) {
   if (v === null || v === undefined || v === "") return null;
   const n = Number(v);
@@ -101,6 +108,37 @@ function normalizeAssignmentCoMap(value: any) {
   return out;
 }
 
+function normalizePptMark(value: any, maxMarks = 5) {
+  if (value === null || value === undefined || value === "") return 0;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  if (parsed < 0 || parsed > maxMarks) return null;
+  return parsed;
+}
+
+function isMissingFinalMarksTableError(error: any) {
+  const message = String(error?.message || "");
+  return message.includes("evaluation_final_marks") && (
+    message.includes("does not exist") ||
+    message.includes("schema cache") ||
+    message.includes("Could not find the table")
+  );
+}
+
+function isMissingStudentMarksColumnError(error: any) {
+  const message = String(error?.message || "");
+  return message.includes("student_marks") && (
+    message.includes("assignment_marks") ||
+    message.includes("assignment_total") ||
+    message.includes("assignment_co_map") ||
+    message.includes("grand_total")
+  ) && (
+    message.includes("does not exist") ||
+    message.includes("schema cache") ||
+    message.includes("Could not find")
+  );
+}
+
 function evaluationTotal(descriptive: any[], mcq: any[], fb: any[], assignment: any[]) {
   return bestFourDescriptiveTotal(descriptive) + objectiveSectionTotal(mcq || []) + objectiveSectionTotal(fb || []) + assignmentSectionTotal(assignment || []);
 }
@@ -130,16 +168,154 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       .eq("year", normalizeYear(input.year))
       .eq("subject_code", String(input.subject_code || "").trim().toUpperCase());
 
-    const department = String(input.department || "").trim();
-    if (department === "H&S") query = query.eq("branch", String(input.branch || "").trim().toUpperCase());
-    else query = query.eq("branch", "");
-
     const semester = normalizeSemester(input.semester);
     if (semester) query = query.eq("semester", semester);
 
     const { count, error } = await query;
     if (error) throw new Error(error.message);
-    return Number(count || 0) > 0;
+    if (Number(count || 0) > 0) return true;
+
+    // Older assignments used a blank branch for core departments. Keep accepting
+    // those rows so Faculty save/submit does not fail after the branch model change.
+    const department = String(input.department || "").trim();
+    const legacyBranch = department === "H&S" ? String(input.branch || "").trim().toUpperCase() : "";
+    let legacyQuery = supabase
+      .from("faculty_subjects")
+      .select("id", { head: true, count: "exact" })
+      .eq("faculty_id", String(input.faculty_id || "").trim())
+      .eq("department", department)
+      .eq("branch", legacyBranch)
+      .eq("regulation", normalizeReg(input.regulation))
+      .eq("year", normalizeYear(input.year))
+      .eq("subject_code", String(input.subject_code || "").trim().toUpperCase());
+    if (semester) legacyQuery = legacyQuery.eq("semester", semester);
+
+    const { count: legacyCount, error: legacyError } = await legacyQuery;
+    if (legacyError) throw new Error(legacyError.message);
+    return Number(legacyCount || 0) > 0;
+  }
+
+  async function fetchSubmittedMidEvaluations(input: {
+    department: string;
+    branch: string;
+    regulation: string;
+    year: string;
+    section: string;
+    subject_code: string;
+  }) {
+    const { data, error } = await supabase
+      .from("evaluations")
+      .select("id,mid_type,status,submitted_at")
+      .eq("department", input.department)
+      .eq("branch", input.branch)
+      .eq("regulation", input.regulation)
+      .eq("year", input.year)
+      .eq("section", input.section)
+      .eq("subject_code", input.subject_code)
+      .in("mid_type", ["Mid I", "Mid II", "Mid1", "Mid2"]);
+
+    if (error) throw new Error(error.message);
+
+    const byMid = new Map<string, any>();
+    for (const row of data || []) {
+      const key = normalizeMidType(row.mid_type);
+      const existing = byMid.get(key);
+      if (!existing || String(row.submitted_at || "") > String(existing.submitted_at || "")) {
+        byMid.set(key, row);
+      }
+    }
+
+    return {
+      mid1: byMid.get("Mid I") || null,
+      mid2: byMid.get("Mid II") || null,
+    };
+  }
+
+  async function fetchStudentTotalsByEvaluationId(evaluationId: string) {
+    const { data, error } = await supabase
+      .from("student_marks")
+      .select("roll_number,student_name,total_marks")
+      .eq("evaluation_id", evaluationId);
+
+    if (error) throw new Error(error.message);
+
+    const totals = new Map<string, { student_name: string; total: number }>();
+    for (const row of data || []) {
+      totals.set(String(row.roll_number || "").trim(), {
+        student_name: String(row.student_name || "").trim(),
+        total: Number(row.total_marks ?? 0),
+      });
+    }
+    return totals;
+  }
+
+  async function buildFinalMarksState(input: {
+    department: string;
+    branch: string;
+    regulation: string;
+    year: string;
+    semester: string;
+    section: string;
+    subject_code: string;
+  }) {
+    const mids = await fetchSubmittedMidEvaluations(input);
+    const mid1Submitted = mids.mid1?.status === "submitted";
+    const mid2Submitted = mids.mid2?.status === "submitted";
+    const canEnterPpt = mid1Submitted && mid2Submitted;
+
+    const mid1Totals = mids.mid1?.id ? await fetchStudentTotalsByEvaluationId(mids.mid1.id) : new Map<string, { student_name: string; total: number }>();
+    const mid2Totals = mids.mid2?.id ? await fetchStudentTotalsByEvaluationId(mids.mid2.id) : new Map<string, { student_name: string; total: number }>();
+
+    const { data: finalRowsData, error: finalError } = await supabase
+      .from("evaluation_final_marks")
+      .select("*")
+      .eq("department", input.department)
+      .eq("branch", input.branch)
+      .eq("regulation", input.regulation)
+      .eq("year", input.year)
+      .eq("semester", input.semester)
+      .eq("section", input.section)
+      .eq("subject_code", input.subject_code)
+      .order("roll_number", { ascending: true });
+
+    if (finalError && !isMissingFinalMarksTableError(finalError)) throw new Error(finalError.message);
+    const finalRows = isMissingFinalMarksTableError(finalError) ? [] : (finalRowsData || []);
+
+    const finalByRoll = new Map<string, any>();
+    for (const row of finalRows) finalByRoll.set(String(row.roll_number || "").trim(), row);
+
+    const rolls = Array.from(new Set([
+      ...Array.from(mid1Totals.keys()),
+      ...Array.from(mid2Totals.keys()),
+      ...Array.from(finalByRoll.keys()),
+    ])).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+
+    const rows = rolls.map((roll_number) => {
+      const mid1 = mid1Totals.get(roll_number);
+      const mid2 = mid2Totals.get(roll_number);
+      const finalRow = finalByRoll.get(roll_number);
+      const pptMarks = Number(finalRow?.ppt_marks ?? 0);
+      const mid1Total = Number(finalRow?.mid1_total ?? mid1?.total ?? 0);
+      const mid2Total = Number(finalRow?.mid2_total ?? mid2?.total ?? 0);
+      return {
+        roll_number,
+        student_name: String(finalRow?.student_name || mid1?.student_name || mid2?.student_name || "").trim(),
+        mid1_total: mid1Total,
+        mid2_total: mid2Total,
+        ppt_marks: pptMarks,
+        ppt_max_marks: Number(finalRow?.ppt_max_marks ?? 5),
+        final_total: Number(finalRow?.final_total ?? (mid1Total + mid2Total + pptMarks)),
+        status: String(finalRow?.status || "draft"),
+      };
+    });
+
+    return {
+      mid1Submitted,
+      mid2Submitted,
+      canEnterPpt,
+      finalSubmitted: rows.length > 0 && rows.every((row) => row.status === "submitted"),
+      rows,
+    };
   }
 
   function buildStudentListId(department: string, branch: string, regulation: string, year: string, semester: string, section: string) {
@@ -182,9 +358,22 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
     // Backward compatibility for older uploaded lists saved before semester was enforced.
     const { data: legacyRows, error: legacyErr } = await baseQuery().eq("semester", "");
     if (legacyErr) throw new Error(legacyErr.message);
+    if ((legacyRows || []).length) {
+      return {
+        rows: legacyRows || [],
+        matchedSemester: input.semester,
+        usedLegacyFallback: true,
+      };
+    }
+
+    // HOD review can open old evaluation rows that did not store semester.
+    // If the requested semester is wrong, fall back to the uploaded list for the same class.
+    const { data: anySemesterRows, error: anySemesterErr } = await baseQuery();
+    if (anySemesterErr) throw new Error(anySemesterErr.message);
+    const matchedSemester = String(anySemesterRows?.[0]?.semester || input.semester).trim();
     return {
-      rows: legacyRows || [],
-      matchedSemester: input.semester,
+      rows: anySemesterRows || [],
+      matchedSemester,
       usedLegacyFallback: true,
     };
   }
@@ -367,7 +556,7 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       const effectiveBranch = department === "H&S" ? branch : "";
       if (department === "H&S" && !effectiveBranch) return res.status(400).json({ error: "branch is required for H&S" });
 
-      const { rows } = await fetchStudentListRows({
+      const { rows, matchedSemester } = await fetchStudentListRows({
         department,
         branch: effectiveBranch,
         regulation,
@@ -389,13 +578,14 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       const students: StudentRow[] = rows.map((r: any) => ({ roll_number: r.roll_number, student_name: r.student_name }));
       res.json({
         success: true,
+        matchedSemester,
         list: {
-          id: buildStudentListId(department, effectiveBranch, regulation, year, semester, section),
+          id: buildStudentListId(department, effectiveBranch, regulation, year, matchedSemester, section),
           department,
           branch: effectiveBranch,
           regulation,
           year,
-          semester,
+          semester: matchedSemester,
           section,
           uploaded_by,
           uploaded_at,
@@ -669,7 +859,6 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
           assignment_marks: assignmentMarksObject,
           assignment_total: assignmentTotal,
           assignment_co_map: assignment_co_map,
-          grand_total: total,
           total_marks: total,
           updated_at: now,
         });
@@ -678,7 +867,20 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
       if (!rows.length) return res.status(400).json({ error: "No valid entries found" });
 
       const { error: upErr } = await supabase.from("student_marks").upsert(rows, { onConflict: "evaluation_id,roll_number" });
-      if (upErr) return res.status(400).json({ error: upErr.message });
+      if (upErr && isMissingStudentMarksColumnError(upErr)) {
+        const legacyRows = rows.map((row) => {
+          const { assignment_marks, assignment_total, assignment_co_map, grand_total, ...legacyRow } = row;
+          void assignment_marks;
+          void assignment_total;
+          void assignment_co_map;
+          void grand_total;
+          return legacyRow;
+        });
+        const { error: legacyUpErr } = await supabase.from("student_marks").upsert(legacyRows, { onConflict: "evaluation_id,roll_number" });
+        if (legacyUpErr) return res.status(400).json({ error: legacyUpErr.message });
+      } else if (upErr) {
+        return res.status(400).json({ error: upErr.message });
+      }
 
       await supabase.from("evaluations").update({ updated_at: now }).eq("id", evaluationId);
 
@@ -756,6 +958,220 @@ export function createEvaluationRouter(supabase: SupabaseClient) {
     } catch (error: any) {
       console.error("Marks fetch error:", error);
       res.status(500).json({ error: "Internal Server Error" });
+    }
+  });
+
+  router.get("/api/eval/final-marks", async (req, res) => {
+    try {
+      const department = String(req.query.department || "").trim();
+      const branch = String(req.query.branch || "").trim().toUpperCase();
+      const regulation = normalizeReg(req.query.regulation);
+      const year = normalizeYear(req.query.year);
+      const semester = normalizeSemester(req.query.semester);
+      const section = normalizeSection(req.query.section);
+      const subject_code = String(req.query.subject_code || "").trim().toUpperCase();
+
+      if (!department) return res.status(400).json({ error: "department is required" });
+      if (!regulation) return res.status(400).json({ error: "regulation is required" });
+      if (!year) return res.status(400).json({ error: "year is required" });
+      if (!semester) return res.status(400).json({ error: "semester is required" });
+      if (!section) return res.status(400).json({ error: "section is required" });
+      if (!subject_code) return res.status(400).json({ error: "subject_code is required" });
+
+      const effectiveBranch = department === "H&S" ? branch : "";
+      if (department === "H&S" && !effectiveBranch) return res.status(400).json({ error: "branch is required for H&S" });
+
+      const state = await buildFinalMarksState({
+        department,
+        branch: effectiveBranch,
+        regulation,
+        year,
+        semester,
+        section,
+        subject_code,
+      });
+
+      res.json({ success: true, ...state, pptMaxMarks: state.rows[0]?.ppt_max_marks ?? 5 });
+    } catch (error: any) {
+      console.error("Final marks fetch error:", error);
+      res.status(500).json({ error: error?.message || "Internal Server Error" });
+    }
+  });
+
+  router.post("/api/eval/final-marks/save", async (req, res) => {
+    try {
+      const body = (req.body || {}) as any;
+      const faculty_id = String(body.faculty_id || "").trim();
+      const actor_id = String(body.actor_id || faculty_id || "").trim();
+      const department = String(body.department || "").trim();
+      const branch = String(body.branch || "").trim().toUpperCase();
+      const regulation = normalizeReg(body.regulation);
+      const year = normalizeYear(body.year);
+      const semester = normalizeSemester(body.semester);
+      const section = normalizeSection(body.section);
+      const subject_name = String(body.subject_name || "").trim();
+      const subject_code = String(body.subject_code || "").trim().toUpperCase();
+      const pptMaxMarks = Number(body.ppt_max_marks ?? 5);
+      const entries = Array.isArray(body.entries) ? body.entries : [];
+
+      if (!faculty_id) return res.status(400).json({ error: "faculty_id is required" });
+      if (!department) return res.status(400).json({ error: "department is required" });
+      if (!regulation) return res.status(400).json({ error: "regulation is required" });
+      if (!year) return res.status(400).json({ error: "year is required" });
+      if (!semester) return res.status(400).json({ error: "semester is required" });
+      if (!section) return res.status(400).json({ error: "section is required" });
+      if (!subject_name) return res.status(400).json({ error: "subject_name is required" });
+      if (!subject_code) return res.status(400).json({ error: "subject_code is required" });
+      if (!entries.length) return res.status(400).json({ error: "entries are required" });
+      if (!Number.isFinite(pptMaxMarks) || pptMaxMarks <= 0) return res.status(400).json({ error: "ppt_max_marks must be greater than 0" });
+
+      const actorCheck = await requireUserByFacultyId(supabase, actor_id);
+      if (!actorCheck.ok) return res.status(actorCheck.status).json({ error: actorCheck.error });
+      const actor = actorCheck.user;
+      if (actor.role !== "FACULTY" && actor.role !== "HOD") return res.status(403).json({ error: "Only Faculty/HOD can save final marks" });
+      if (actor.role === "FACULTY" && actor.faculty_id !== faculty_id) return res.status(403).json({ error: "Faculty can only edit their own final marks" });
+      if (actor.role === "HOD" && !canHodAccessDepartment(String(actor.department || "").trim(), department)) return res.status(403).json({ error: "HOD department mismatch" });
+
+      const effectiveBranch = department === "H&S" ? branch : "";
+      if (department === "H&S") {
+        if (!effectiveBranch) return res.status(400).json({ error: "branch is required for H&S" });
+        if (year !== "I") return res.status(400).json({ error: "H&S marks are allowed only for year I" });
+      }
+
+      const hasAssignedSubject = await facultyHasAssignedSubject({
+        faculty_id,
+        department,
+        branch: effectiveBranch,
+        regulation,
+        year,
+        semester,
+        subject_code,
+      });
+      if (!hasAssignedSubject) return res.status(403).json({ error: "Faculty subject allocation mismatch" });
+
+      const state = await buildFinalMarksState({
+        department,
+        branch: effectiveBranch,
+        regulation,
+        year,
+        semester,
+        section,
+        subject_code,
+      });
+      if (!state.canEnterPpt) {
+        return res.status(400).json({ error: "PPT marks can be entered only after Mid 1 and Mid 2 submission." });
+      }
+
+      const stateByRoll = new Map(state.rows.map((row) => [row.roll_number, row]));
+      const now = new Date().toISOString();
+      const rows = [];
+      for (const entry of entries) {
+        const roll_number = String(entry?.roll_number || "").trim();
+        const student_name = String(entry?.student_name || "").trim();
+        if (!roll_number || !student_name) continue;
+        const prior = stateByRoll.get(roll_number);
+        const pptMarks = normalizePptMark(entry?.ppt_marks, pptMaxMarks);
+        if (pptMarks === null) return res.status(400).json({ error: `Invalid PPT marks for ${roll_number}` });
+        const mid1Total = Number(prior?.mid1_total ?? 0);
+        const mid2Total = Number(prior?.mid2_total ?? 0);
+        rows.push({
+          faculty_id,
+          department,
+          branch: effectiveBranch,
+          regulation,
+          year,
+          semester,
+          section,
+          subject_name,
+          subject_code,
+          roll_number,
+          student_name,
+          mid1_total: mid1Total,
+          mid2_total: mid2Total,
+          ppt_marks: pptMarks ?? 0,
+          ppt_max_marks: pptMaxMarks,
+          final_total: mid1Total + mid2Total + (pptMarks ?? 0),
+          status: "draft",
+          submitted_at: null,
+          updated_at: now,
+        });
+      }
+
+      if (!rows.length) return res.status(400).json({ error: "No valid PPT rows found" });
+
+      const { error } = await supabase
+        .from("evaluation_final_marks")
+        .upsert(rows, { onConflict: "department,branch,regulation,year,semester,section,subject_code,roll_number" });
+
+      if (error && isMissingFinalMarksTableError(error)) {
+        return res.status(400).json({ error: "PPT final marks table is missing. Run database/migrations/2026-04-06-add-evaluation-final-marks.sql before saving PPT marks." });
+      }
+      if (error) return res.status(400).json({ error: error.message });
+      res.json({ success: true, saved: rows.length });
+    } catch (error: any) {
+      console.error("Final marks save error:", error);
+      res.status(500).json({ error: error?.message || "Internal Server Error" });
+    }
+  });
+
+  router.post("/api/eval/final-marks/submit", async (req, res) => {
+    try {
+      const body = (req.body || {}) as any;
+      const faculty_id = String(body.faculty_id || "").trim();
+      const department = String(body.department || "").trim();
+      const branch = String(body.branch || "").trim().toUpperCase();
+      const regulation = normalizeReg(body.regulation);
+      const year = normalizeYear(body.year);
+      const semester = normalizeSemester(body.semester);
+      const section = normalizeSection(body.section);
+      const subject_code = String(body.subject_code || "").trim().toUpperCase();
+
+      if (!faculty_id) return res.status(400).json({ error: "faculty_id is required" });
+      if (!department) return res.status(400).json({ error: "department is required" });
+      if (!regulation) return res.status(400).json({ error: "regulation is required" });
+      if (!year) return res.status(400).json({ error: "year is required" });
+      if (!semester) return res.status(400).json({ error: "semester is required" });
+      if (!section) return res.status(400).json({ error: "section is required" });
+      if (!subject_code) return res.status(400).json({ error: "subject_code is required" });
+
+      const userCheck = await requireUserByFacultyId(supabase, faculty_id);
+      if (!userCheck.ok) return res.status(userCheck.status).json({ error: userCheck.error });
+      const user = userCheck.user;
+      if (user.role !== "FACULTY") return res.status(403).json({ error: "Only Faculty can submit final marks" });
+
+      const effectiveBranch = department === "H&S" ? branch : "";
+      const state = await buildFinalMarksState({
+        department,
+        branch: effectiveBranch,
+        regulation,
+        year,
+        semester,
+        section,
+        subject_code,
+      });
+      if (!state.canEnterPpt) return res.status(400).json({ error: "PPT marks can be entered only after Mid 1 and Mid 2 submission." });
+      if (!state.rows.length) return res.status(400).json({ error: "Save PPT marks before submitting final marks." });
+
+      const now = new Date().toISOString();
+      const { error } = await supabase
+        .from("evaluation_final_marks")
+        .update({ status: "submitted", submitted_at: now, updated_at: now })
+        .eq("department", department)
+        .eq("branch", effectiveBranch)
+        .eq("regulation", regulation)
+        .eq("year", year)
+        .eq("semester", semester)
+        .eq("section", section)
+        .eq("subject_code", subject_code);
+
+      if (error && isMissingFinalMarksTableError(error)) {
+        return res.status(400).json({ error: "PPT final marks table is missing. Run database/migrations/2026-04-06-add-evaluation-final-marks.sql before submitting final marks." });
+      }
+      if (error) return res.status(400).json({ error: error.message });
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Final marks submit error:", error);
+      res.status(500).json({ error: error?.message || "Internal Server Error" });
     }
   });
 

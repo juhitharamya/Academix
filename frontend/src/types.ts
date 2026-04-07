@@ -31,7 +31,7 @@ export interface QuestionPaper {
 }
 
 export interface Subject {
-  id: number;
+  id: string | number;
   regulation: string;
   department: string;
   branch?: string;
@@ -39,6 +39,9 @@ export interface Subject {
   semester: string;
   subject_name: string;
   subject_code: string;
+  is_active?: boolean;
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface FacultySubjectAssignment {
