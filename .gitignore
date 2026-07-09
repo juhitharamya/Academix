@@ -8,4 +8,4 @@ academix.db
 database/*.db
 .env*
 !.env.example
-/api/index.js
+
