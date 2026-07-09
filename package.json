@@ -11,7 +11,7 @@
     "seed:subjects": "node database/seedSubjects.mjs",
     "seed:admin": "node database/seedAdmin.mjs",
     "import:subjects": "node database/importSubjectsCsv.mjs",
-    "build": "npm --prefix frontend run build",
+    "build": "npm --prefix frontend run build && esbuild api/_index.ts --bundle --platform=node --format=esm --target=node20 --outfile=api/index.js --packages=external",
     "preview": "npm --prefix frontend run preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
