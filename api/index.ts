@@ -1,4 +1,4 @@
-import { createApp } from "../backend/app.ts";
+import { createApp } from "../backend/app.js";
 import { supabase } from "../database/supabaseClient.js";
 
 const app = createApp({
