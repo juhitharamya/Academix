@@ -122,12 +122,6 @@ All registered accounts stored in the Supabase `users` database table:
 | **HOD** | `HODcsm` | `1234` | CSM | `/` | Active |
 | **Exam Branch** | `Exam1` | `1234` | Exam Branch | `/` | Disabled |
 
-> **Note on Passwords**:
-> - **Admin Password**: `12345678` (Sign in at `/admin`)
-> - **All Faculty, HOD, and ExamBranch Passwords**: `1234` (Sign in at `/`)
-
----
-
 ## 🔧 Troubleshooting & Common Issues
 
 1. **Admin vs Faculty Login Routes**:
