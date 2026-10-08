@@ -86,15 +86,11 @@ Ensure `.env` exists in the repository root (see `.env.example`):
 PORT=3001
 API_PORT=3002
 
-# Supabase (PostgreSQL)
-SUPABASE_URL="https://xwqeqnksjgxklliosmwa.supabase.co"
-SUPABASE_ANON_KEY="sb_publishable_6CmknpNxJLyQEZnWvfdl_A_B1tK_W1P"
 
 # Auth Token Secret
 AUTH_SECRET="change-me"
 
-# Optional Gemini AI API key
-GEMINI_API_KEY="your_gemini_api_key_here"
+
 ```
 
 ### **3. Start Development Servers**
