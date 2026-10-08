@@ -2,7 +2,8 @@
 
 Academix is a modern, enterprise-grade **Academic Management System & Automated Evaluation Engine** designed for higher education institutions. It streamlines curriculum subject catalogs, automated mid-term question paper generation (with Bloom's Taxonomy & Course Outcome mapping), mid-exam mark entry, evaluation review workflows, and final grade consolidation.
 
-![Academix Dashboard](docs/academix_dashboard.jpg)
+![Academix Faculty Dashboard](docs/faculty_dashboard.png)
+*Faculty Dashboard showing assigned course evaluation workflows and question paper status.*
 
 ---
 
@@ -20,34 +21,34 @@ Academix automates the end-to-end examination and academic evaluation pipeline f
 
 ---
 
+## 📸 Screenshots
+
+| Faculty Dashboard | Admin Management Panel |
+| :---: | :---: |
+| ![Faculty Dashboard](docs/faculty_dashboard.png) | ![Admin Panel](docs/admin_dashboard.png) |
+| *Faculty course roster and evaluation tracker* | *Admin user management, faculty assignments & catalogs* |
+
+---
+
 ## 🛠️ Tech Stack
 
 ### **Frontend**
 - **Framework**: React 19 + TypeScript 5.8
 - **Build Tool**: Vite 6
-- **Styling**: Tailwind CSS 4 + Glassmorphism Design Token System
+- **Styling**: Tailwind CSS 4 + Custom Design Tokens
 - **Animations & Icons**: Motion (Framer Motion) + Lucide React Icons
 - **Data Export**: SheetJS (XLSX) for Excel reporting
 
 ### **Backend**
 - **Runtime**: Node.js 22 + Express 4
+- **Language**: TypeScript via `tsx`
 - **API Spec**: Swagger UI Express (`/swagger`)
-- **Authentication**: Custom Scrypt Password Hashing + JWT Bearer Tokens
+- **Authentication**: Custom Scrypt Password Hashing (`crypto.scryptSync`) + Signed JWT Bearer Tokens
 
-### **Database & AI**
-- **Local DB**: SQLite via `better-sqlite3` (`database/academix.db`)
-- **Cloud DB (Optional)**: PostgreSQL via `@supabase/supabase-js`
+### **Database & Cloud Services**
+- **Cloud Database**: PostgreSQL hosted on **Supabase** via `@supabase/supabase-js`
+- **Local Fallback Database**: SQLite via `better-sqlite3` (`database/academix.db`)
 - **AI Integration**: Google Gemini API via `@google/genai` (`v1.29.0`)
-
----
-
-## 📊 System Figures & Dataset Overview
-
-- **Dataset Size**: **306 active database records** across 10 SQLite tables.
-- **Curriculum Catalog**: **72 seeded subjects** across 4 branches under Regulation R25.
-- **Student Roster Dataset**: **128 student entries** with 64 section mark evaluations.
-- **Registered User Accounts**: **11 active test accounts** (Faculty, HOD, Exam Branch).
-- **Application Interface**: **27 distinct views and admin sub-tabs**.
 
 ---
 
@@ -68,7 +69,7 @@ graph TD
 ## 🚀 How to Run Locally
 
 ### **Prerequisites**
-- **Node.js**: v18.0.0 or higher
+- **Node.js**: v18.0.0 or higher (v20+ recommended)
 - **npm**: v9.0.0 or higher
 
 ### **1. Clone & Install Dependencies**
@@ -79,33 +80,75 @@ npm install
 ```
 
 ### **2. Configure Environment Variables**
-Create a `.env` file in the project root (or copy `.env.example`):
+Ensure `.env` exists in the repository root (see `.env.example`):
 ```env
+# Ports
 PORT=3001
 API_PORT=3002
+
+# Supabase (PostgreSQL)
+SUPABASE_URL="https://xwqeqnksjgxklliosmwa.supabase.co"
+SUPABASE_ANON_KEY="sb_publishable_6CmknpNxJLyQEZnWvfdl_A_B1tK_W1P"
+
+# Auth Token Secret
+AUTH_SECRET="change-me"
+
+# Optional Gemini AI API key
 GEMINI_API_KEY="your_gemini_api_key_here"
 ```
 
 ### **3. Start Development Servers**
-Run both the Frontend and Backend concurrently from the root directory:
+Run both Frontend and Backend concurrently from the root directory:
 ```bash
 npm run dev
 ```
 
-- **Frontend App**: `http://localhost:3001`
-- **Backend API & Swagger Docs**: `http://localhost:3002/swagger`
+Or run each service individually:
+- **Backend**: `npm run dev:server` (or `npm --prefix backend run dev`)
+- **Frontend**: `npm run dev:client` (or `npm --prefix frontend run dev`)
+
+### **4. Access Points**
+- **Faculty / HOD / Exam Branch Portal**: [http://localhost:3001/](http://localhost:3001/)
+- **Admin Authentication & Management Panel**: [http://localhost:3001/admin](http://localhost:3001/admin)
+- **Backend API & Swagger Documentation**: [http://localhost:3002/swagger](http://localhost:3002/swagger)
 
 ---
 
-## 🗝️ Default Test Credentials
+## 🗝️ Previous Login Details (Supabase Database)
 
-You can test the application using the pre-seeded user accounts:
+All registered accounts stored in the Supabase `users` database table:
 
-| Role | Faculty ID | Password | Access Level |
-| :--- | :--- | :--- | :--- |
-| **Faculty** | `F001` | *(Default or assigned)* | Create papers, enter evaluation marks |
-| **HOD** | `H001` | *(Default or assigned)* | Review & approve department question papers |
-| **Exam Branch** | `Exam1` | *(Default or assigned)* | Consolidate final Mid 1, Mid 2 & PPT marks |
+| Role | Username / Faculty ID | Password | Department | Login Portal | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Admin** | `admin0310@gmail.com` | `12345678` | Administration | `/admin` | Active |
+| **Faculty** | `CSM1` | `1234` | CSM | `/` | Active |
+| **Faculty** | `CSM2` | `1234` | CSM | `/` | Active |
+| **Faculty** | `varshini01` | `1234` | CSM | `/` | Active |
+| **HOD** | `HODcsm` | `1234` | CSM | `/` | Active |
+| **Faculty** | `H&S1` | `1234` | H&S | `/` | Active |
+| **Faculty** | `H&S2` | `1234` | H&S | `/` | Active |
+| **HOD** | `HODhs` | `1234` | H&S | `/` | Active |
+| **Exam Branch** | `Exambranch` | `1234` | Exam Branch | `/` | Active |
+| **Exam Branch** | `Exam1` | `1234` | Exam Branch | `/` | Disabled |
+
+> **Note on Passwords**:
+> - **Admin Password**: `12345678` (Sign in at `/admin`)
+> - **All Faculty, HOD, and ExamBranch Passwords**: `1234` (Sign in at `/`)
+
+---
+
+## 🔧 Troubleshooting & Common Issues
+
+1. **Admin vs Faculty Login Routes**:
+   - The root portal (`/`) is reserved for Faculty, HOD, and Exam Branch accounts. Attempting to log in as Admin on `/` will prompt you to navigate to `/admin`.
+   - The `/admin` portal accepts the Admin email (`admin0310@gmail.com`) and password (`12345678`).
+
+2. **Supabase Connectivity**:
+   - If Supabase is paused or encounters a DNS error (`getaddrinfo ENOTFOUND`), check project status in the Supabase dashboard to restore connectivity.
+   - You can verify backend database health at `http://localhost:3002/api/health`.
+
+3. **Port Conflicts**:
+   - If port `3001` or `3002` is in use, you can set custom ports using `PORT=3003 API_PORT=3004 npm run dev`.
 
 ---
 
