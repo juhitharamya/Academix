@@ -116,15 +116,10 @@ All registered accounts stored in the Supabase `users` database table:
 
 | Role | Username / Faculty ID | Password | Department | Login Portal | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Admin** | `admin0310@gmail.com` | `12345678` | Administration | `/admin` | Active |
+| 
 | **Faculty** | `CSM1` | `1234` | CSM | `/` | Active |
 | **Faculty** | `CSM2` | `1234` | CSM | `/` | Active |
-| **Faculty** | `varshini01` | `1234` | CSM | `/` | Active |
 | **HOD** | `HODcsm` | `1234` | CSM | `/` | Active |
-| **Faculty** | `H&S1` | `1234` | H&S | `/` | Active |
-| **Faculty** | `H&S2` | `1234` | H&S | `/` | Active |
-| **HOD** | `HODhs` | `1234` | H&S | `/` | Active |
-| **Exam Branch** | `Exambranch` | `1234` | Exam Branch | `/` | Active |
 | **Exam Branch** | `Exam1` | `1234` | Exam Branch | `/` | Disabled |
 
 > **Note on Passwords**:
